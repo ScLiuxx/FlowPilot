@@ -6,6 +6,7 @@ import com.flowpilot.auth.security.JwtTokenProvider;
 import com.flowpilot.common.exception.BizException;
 import com.flowpilot.common.id.SnowflakeIdGenerator;
 import com.flowpilot.common.result.ErrorCode;
+import com.flowpilot.common.util.Ids;
 import com.flowpilot.user.entity.SysUser;
 import com.flowpilot.user.mapper.SysUserMapper;
 import lombok.RequiredArgsConstructor;
@@ -82,7 +83,7 @@ public class AuthService {
 
     private AuthDtos.UserProfile toProfile(SysUser user) {
         return AuthDtos.UserProfile.builder()
-                .id(user.getId())
+                .id(Ids.of(user.getId()))
                 .username(user.getUsername())
                 .nickname(user.getNickname())
                 .email(user.getEmail())

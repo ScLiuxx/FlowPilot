@@ -3,6 +3,7 @@ package com.flowpilot.report.controller;
 import com.flowpilot.common.result.PageResult;
 import com.flowpilot.common.result.Result;
 import com.flowpilot.common.security.CurrentUser;
+import com.flowpilot.common.util.Ids;
 import com.flowpilot.common.util.JsonUtils;
 import com.flowpilot.execution.entity.WorkflowExecution;
 import com.flowpilot.execution.mapper.WorkflowExecutionMapper;
@@ -76,9 +77,9 @@ public class ReportController {
 
     static Map<String, Object> toResponse(AnalysisReport report) {
         Map<String, Object> response = new LinkedHashMap<>();
-        response.put("reportId", report.getId());
+        response.put("reportId", Ids.of(report.getId()));
         response.put("reportNo", report.getReportNo());
-        response.put("workflowExecutionId", report.getWorkflowExecutionId());
+        response.put("workflowExecutionId", Ids.of(report.getWorkflowExecutionId()));
         response.put("title", report.getTitle());
         response.put("repositoryUrl", report.getRepositoryUrl());
         response.put("reportType", report.getReportType());

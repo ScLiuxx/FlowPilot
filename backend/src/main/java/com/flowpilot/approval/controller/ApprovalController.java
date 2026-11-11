@@ -5,6 +5,7 @@ import com.flowpilot.approval.service.ApprovalService;
 import com.flowpilot.common.result.PageResult;
 import com.flowpilot.common.result.Result;
 import com.flowpilot.common.security.CurrentUser;
+import com.flowpilot.common.util.Ids;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.NotBlank;
 import lombok.AllArgsConstructor;
@@ -59,9 +60,9 @@ public class ApprovalController {
 
     static Map<String, Object> toResponse(ApprovalRecord approval) {
         Map<String, Object> response = new LinkedHashMap<>();
-        response.put("approvalId", approval.getId());
-        response.put("workflowExecutionId", approval.getWorkflowExecutionId());
-        response.put("nodeExecutionId", approval.getNodeExecutionId());
+        response.put("approvalId", Ids.of(approval.getId()));
+        response.put("workflowExecutionId", Ids.of(approval.getWorkflowExecutionId()));
+        response.put("nodeExecutionId", Ids.of(approval.getNodeExecutionId()));
         response.put("approvalType", approval.getApprovalType());
         response.put("status", approval.getStatus());
         response.put("title", approval.getTitle());
@@ -73,7 +74,7 @@ public class ApprovalController {
                 ? null : approval.getRequestedAt().toString());
         response.put("decidedAt", approval.getDecidedAt() == null
                 ? null : approval.getDecidedAt().toString());
-        response.put("approverId", approval.getApproverId());
+        response.put("approverId", Ids.of(approval.getApproverId()));
         response.put("comment", approval.getComment());
         return response;
     }

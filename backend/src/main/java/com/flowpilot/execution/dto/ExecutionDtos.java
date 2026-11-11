@@ -31,7 +31,8 @@ public final class ExecutionDtos {
     @NoArgsConstructor
     @AllArgsConstructor
     public static class StartExecutionResponse {
-        private Long executionId;
+        /** The identifier as a string, because a 64 bit id does not fit into a browser number. */
+        private String executionId;
         private String executionNo;
         private String status;
     }
@@ -41,11 +42,11 @@ public final class ExecutionDtos {
     @NoArgsConstructor
     @AllArgsConstructor
     public static class ExecutionResponse {
-        private Long executionId;
+        private String executionId;
         private String executionNo;
-        private Long workflowId;
-        private Long workflowVersionId;
-        private Long userId;
+        private String workflowId;
+        private String workflowVersionId;
+        private String userId;
         private String status;
         private Map<String, Object> input;
         private Map<String, Object> output;
@@ -64,7 +65,7 @@ public final class ExecutionDtos {
     @NoArgsConstructor
     @AllArgsConstructor
     public static class NodeResponse {
-        private Long nodeExecutionId;
+        private String nodeExecutionId;
         private String nodeKey;
         private String nodeType;
         private String status;
@@ -100,7 +101,7 @@ public final class ExecutionDtos {
     public static class EventResponse {
         private Long sequenceNo;
         private String eventType;
-        private Long nodeExecutionId;
+        private String nodeExecutionId;
         private Map<String, Object> eventData;
         private String createdAt;
     }
@@ -118,7 +119,7 @@ public final class ExecutionDtos {
     @NoArgsConstructor
     @AllArgsConstructor
     public static class CancelResponse {
-        private Long executionId;
+        private String executionId;
         private String status;
     }
 }

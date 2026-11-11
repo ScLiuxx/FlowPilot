@@ -3,6 +3,8 @@ package com.flowpilot.workflow.controller;
 import com.flowpilot.common.result.PageResult;
 import com.flowpilot.common.result.Result;
 import com.flowpilot.common.security.CurrentUser;
+import com.flowpilot.common.util.Ids;
+import com.flowpilot.common.util.JsonUtils;
 import com.flowpilot.workflow.definition.WorkflowDefinitionDocument;
 import com.flowpilot.workflow.dto.WorkflowDtos;
 import com.flowpilot.workflow.entity.WorkflowDefinition;
@@ -11,6 +13,7 @@ import com.flowpilot.workflow.parser.WorkflowValidator;
 import com.flowpilot.workflow.service.WorkflowService;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -26,6 +29,7 @@ import java.util.List;
 @RestController
 @RequestMapping("/api/v1/workflows")
 @RequiredArgsConstructor
+@Slf4j
 public class WorkflowController {
 
     private final WorkflowService workflowService;
@@ -124,11 +128,11 @@ public class WorkflowController {
 
     static WorkflowDtos.WorkflowResponse toResponse(WorkflowDefinition definition) {
         return WorkflowDtos.WorkflowResponse.builder()
-                .id(definition.getId())
+                .id(Ids.of(definition.getId()))
                 .name(definition.getName())
                 .description(definition.getDescription())
                 .category(definition.getCategory())
-                .ownerId(definition.getOwnerId())
+                .ownerId(Ids.of(definition.getOwnerId()))
                 .latestVersion(definition.getLatestVersion())
                 .status(definition.getStatus())
                 .createdAt(definition.getCreatedAt() == null ? null : definition.getCreatedAt().toString())
@@ -138,15 +142,32 @@ public class WorkflowController {
 
     static WorkflowDtos.VersionResponse toResponse(WorkflowVersion version) {
         return WorkflowDtos.VersionResponse.builder()
-                .id(version.getId())
-                .workflowId(version.getWorkflowId())
+                .id(Ids.of(version.getId()))
+                .workflowId(Ids.of(version.getWorkflowId()))
                 .version(version.getVersion())
                 .status(version.getStatus())
                 .definitionHash(version.getDefinitionHash())
                 .definitionJson(version.getDefinitionJson())
-                .createdBy(version.getCreatedBy())
+                .definition(parseDefinition(version.getDefinitionJson()))
+                .createdBy(Ids.of(version.getCreatedBy()))
                 .publishedAt(version.getPublishedAt() == null ? null : version.getPublishedAt().toString())
                 .createdAt(version.getCreatedAt() == null ? null : version.getCreatedAt().toString())
                 .build();
+    }
+
+    /**
+     * Parses the canonical definition of a version, so the console can render the nodes without
+     * having to parse the json itself.
+     */
+    private static WorkflowDefinitionDocument parseDefinition(String definitionJson) {
+        if (definitionJson == null || definitionJson.isBlank()) {
+            return null;
+        }
+        try {
+            return JsonUtils.fromJson(definitionJson, WorkflowDefinitionDocument.class);
+        } catch (RuntimeException ex) {
+            log.warn("the definition of a workflow version could not be parsed: {}", ex.getMessage());
+            return null;
+        }
     }
 }

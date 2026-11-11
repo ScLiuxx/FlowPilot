@@ -7,6 +7,7 @@ import com.flowpilot.common.result.ErrorCode;
 import com.flowpilot.common.result.PageResult;
 import com.flowpilot.common.result.Result;
 import com.flowpilot.common.security.CurrentUser;
+import com.flowpilot.common.util.Ids;
 import com.flowpilot.common.util.JsonUtils;
 import com.flowpilot.execution.dto.ExecutionDtos;
 import com.flowpilot.execution.entity.ExecutionEvent;
@@ -79,7 +80,7 @@ public class ExecutionController {
         var document = workflowService.parse(version.getDefinitionJson());
         WorkflowExecution execution = executionService.start(version, document, userId, request.getInput());
         return Result.success(ExecutionDtos.StartExecutionResponse.builder()
-                .executionId(execution.getId())
+                .executionId(Ids.of(execution.getId()))
                 .executionNo(execution.getExecutionNo())
                 .status(execution.getStatus())
                 .build());
@@ -181,7 +182,7 @@ public class ExecutionController {
         executionService.cancel(executionId, reason, userId);
 
         return Result.success(ExecutionDtos.CancelResponse.builder()
-                .executionId(executionId)
+                .executionId(Ids.of(executionId))
                 .status("CANCEL_REQUESTED")
                 .build());
     }
@@ -194,7 +195,7 @@ public class ExecutionController {
         executionService.requireAccessible(executionId, CurrentUser.requireId(), CurrentUser.isAdmin());
         AnalysisReport report = reportService.generate(executionId);
         return Result.success(Map.of(
-                "reportId", report.getId(),
+                "reportId", Ids.of(report.getId()),
                 "reportNo", report.getReportNo(),
                 "status", report.getStatus(),
                 "title", report.getTitle()));
@@ -202,11 +203,11 @@ public class ExecutionController {
 
     static ExecutionDtos.ExecutionResponse toResponse(WorkflowExecution execution) {
         return ExecutionDtos.ExecutionResponse.builder()
-                .executionId(execution.getId())
+                .executionId(Ids.of(execution.getId()))
                 .executionNo(execution.getExecutionNo())
-                .workflowId(execution.getWorkflowId())
-                .workflowVersionId(execution.getWorkflowVersionId())
-                .userId(execution.getUserId())
+                .workflowId(Ids.of(execution.getWorkflowId()))
+                .workflowVersionId(Ids.of(execution.getWorkflowVersionId()))
+                .userId(Ids.of(execution.getUserId()))
                 .status(execution.getStatus())
                 .input(JsonUtils.toMap(execution.getInputJson()))
                 .output(execution.getOutputJson() == null
@@ -228,7 +229,7 @@ public class ExecutionController {
             duration = Duration.between(node.getStartedAt(), node.getFinishedAt()).toMillis();
         }
         return ExecutionDtos.NodeResponse.builder()
-                .nodeExecutionId(node.getId())
+                .nodeExecutionId(Ids.of(node.getId()))
                 .nodeKey(node.getNodeKey())
                 .nodeType(node.getNodeType())
                 .status(node.getStatus())
@@ -260,7 +261,7 @@ public class ExecutionController {
         return ExecutionDtos.EventResponse.builder()
                 .sequenceNo(event.getSequenceNo())
                 .eventType(event.getEventType())
-                .nodeExecutionId(event.getNodeExecutionId())
+                .nodeExecutionId(Ids.of(event.getNodeExecutionId()))
                 .eventData(JsonUtils.toMap(event.getEventData()))
                 .createdAt(event.getCreatedAt() == null ? null : event.getCreatedAt().toString())
                 .build();

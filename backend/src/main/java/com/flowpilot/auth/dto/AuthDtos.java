@@ -62,7 +62,8 @@ public final class AuthDtos {
     @NoArgsConstructor
     @AllArgsConstructor
     public static class UserProfile {
-        private Long id;
+        /** The identifier as a string, because a 64 bit id does not fit into a browser number. */
+        private String id;
         private String username;
         private String nickname;
         private String email;

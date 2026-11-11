@@ -1,5 +1,6 @@
 package com.flowpilot.monitoring.sse;
 
+import com.flowpilot.common.util.Ids;
 import com.flowpilot.common.util.JsonUtils;
 import com.flowpilot.execution.entity.ExecutionEvent;
 import com.flowpilot.execution.mapper.ExecutionEventMapper;
@@ -146,7 +147,7 @@ public class SseEventBroadcaster {
         Map<String, Object> payload = new java.util.LinkedHashMap<>();
         payload.put("sequenceNo", event.getSequenceNo());
         payload.put("eventType", event.getEventType());
-        payload.put("nodeExecutionId", event.getNodeExecutionId());
+        payload.put("nodeExecutionId", Ids.of(event.getNodeExecutionId()));
         payload.put("eventData", JsonUtils.toMap(event.getEventData()));
         payload.put("createdAt", event.getCreatedAt() == null
                 ? LocalDateTime.now().toString() : event.getCreatedAt().toString());

@@ -4,7 +4,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { ArrowLeft, CircleClose, Refresh, VideoPause } from '@element-plus/icons-vue'
 import { approvalApi } from '@/api/client'
-import type { Approval, ApprovalDecision, Id } from '@/api/types'
+import type { Approval, ApprovalDecision, Id, JsonObject } from '@/api/types'
 import { useAuthStore } from '@/stores/auth'
 import { useExecutionStore } from '@/stores/executions'
 import PageHeader from '@/components/PageHeader.vue'
@@ -49,6 +49,12 @@ const relatedApprovals = computed(() =>
 const pendingApproval = computed(
   () => relatedApprovals.value.find((item) => item.status === 'PENDING') ?? null
 )
+
+/** 执行输出：成功结束后由各节点的产出汇总而成 */
+const output = computed<JsonObject>(() => execution.value?.output ?? {})
+const outputNodeCount = computed(() => Object.keys(output.value).length)
+const hasOutput = computed(() => outputNodeCount.value > 0)
+const formattedOutput = computed(() => JSON.stringify(output.value, null, 2))
 
 async function loadAll(): Promise<void> {
   loading.value = true
@@ -246,6 +252,17 @@ onBeforeUnmount(() => {
         <StatTile label="失败节点" :value="execution?.failedNodes ?? 0" :tone="(execution?.failedNodes ?? 0) > 0 ? 'danger' : 'default'" />
         <StatTile label="耗时" :value="formatSpan(execution?.startedAt, execution?.finishedAt)" hint="从开始到结束" />
         <StatTile label="开始时间" :value="formatDateTime(execution?.startedAt)" :hint="execution?.finishedAt ? `结束 ${formatDateTime(execution.finishedAt)}` : '尚未结束'" />
+      </div>
+
+      <!-- 工作流输出 -->
+      <div v-if="hasOutput" class="fp-card">
+        <div class="fp-card__head">
+          <h2 class="fp-section-title">执行输出</h2>
+          <span class="fp-muted">{{ outputNodeCount }} 个节点的产出</span>
+        </div>
+        <div class="fp-card__body">
+          <pre class="fp-ed__output">{{ formattedOutput }}</pre>
+        </div>
       </div>
 
       <!-- 错误信息 -->
@@ -678,6 +695,21 @@ onBeforeUnmount(() => {
   border-radius: var(--fp-radius-sm);
   background: var(--fp-surface-3);
   color: var(--fp-text-muted);
+  font-size: 11.5px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.fp-ed__output {
+  margin: 0;
+  padding: var(--sp-3);
+  max-height: 420px;
+  overflow: auto;
+  border-radius: var(--fp-radius-sm);
+  background: var(--fp-surface-3);
+  color: var(--fp-text-muted);
+  font-family: var(--font-mono);
   font-size: 11.5px;
   line-height: 1.55;
   white-space: pre-wrap;
