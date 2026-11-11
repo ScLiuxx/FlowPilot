@@ -18,7 +18,7 @@ import java.util.List;
  * Releases nodes whose retry delay elapsed.
  *
  * <p>The delay is persisted instead of being slept on in a worker thread, so a worker never
- * blocks while waiting to retry.
+ * blocks while waiting to retry. A node is only released when its {@code next_retry_at} is due.
  */
 @Slf4j
 @Component
@@ -39,7 +39,7 @@ public class RetryScheduler {
         if (!enabled) {
             return;
         }
-        List<NodeExecution> waiting = nodeExecutionMapper.findRetryWaiting(batchSize);
+        List<NodeExecution> waiting = nodeExecutionMapper.findRetryWaiting(LocalDateTime.now(), batchSize);
         for (NodeExecution node : waiting) {
             try {
                 release(node);
@@ -49,10 +49,19 @@ public class RetryScheduler {
         }
     }
 
-    @Transactional
+    /**
+     * Releases one node for its next attempt.
+     *
+     * <p>The call goes through the scheduler, because the scheduler owns the transaction that
+     * moves the node back into the ready state and writes the execution message.
+     */
     public void release(NodeExecution node) {
         NodeExecution current = nodeExecutionMapper.selectById(node.getId());
         if (current == null || !NodeStatus.RETRY_WAIT.name().equals(current.getStatus())) {
+            return;
+        }
+        if (current.getNextRetryAt() != null && current.getNextRetryAt().isAfter(LocalDateTime.now())) {
+            // The delay of the retry policy has not elapsed yet.
             return;
         }
         scheduler.scheduleRetry(current);

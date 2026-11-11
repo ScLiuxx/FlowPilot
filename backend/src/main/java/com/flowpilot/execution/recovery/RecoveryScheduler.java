@@ -21,7 +21,7 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
-import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionTemplate;
 
 import java.time.LocalDateTime;
 import java.util.List;
@@ -54,6 +54,7 @@ public class RecoveryScheduler {
     private final WorkflowScheduler scheduler;
     private final NodeResultService resultService;
     private final ExecutionEventService eventService;
+    private final TransactionTemplate transactionTemplate;
 
     @Value("${flowpilot.recovery.batch-size:50}")
     private int batchSize;
@@ -79,47 +80,55 @@ public class RecoveryScheduler {
         }
     }
 
-    @Transactional
+    /**
+     * Takes a node whose worker died over.
+     *
+     * <p>The re-read and the conditional update happen in the same transaction, so two recovery
+     * scanners cannot take the same node over: the update only succeeds while the node is still
+     * running with the expired lease.
+     */
     public void recoverNode(NodeExecution node) {
-        // Re-read under the current transaction and make sure the node is still running with an
-        // expired lease. Another scanner may have recovered it in the meantime.
-        NodeExecution current = nodeExecutionMapper.selectById(node.getId());
-        if (current == null || !NodeStatus.RUNNING.name().equals(current.getStatus())) {
-            return;
-        }
-        if (current.getLeaseExpireAt() == null
-                || current.getLeaseExpireAt().isAfter(LocalDateTime.now())) {
-            return;
-        }
+        transactionTemplate.executeWithoutResult(status -> {
+            // Re-read under the current transaction and make sure the node is still running with an
+            // expired lease. Another scanner may have recovered it in the meantime.
+            NodeExecution current = nodeExecutionMapper.selectById(node.getId());
+            if (current == null || !NodeStatus.RUNNING.name().equals(current.getStatus())) {
+                return;
+            }
+            if (current.getLeaseExpireAt() == null
+                    || current.getLeaseExpireAt().isAfter(LocalDateTime.now())) {
+                return;
+            }
 
-        WorkflowExecution execution = executionMapper.selectById(current.getWorkflowExecutionId());
-        if (execution == null || WorkflowStatus.valueOf(execution.getStatus()).isTerminal()) {
-            return;
-        }
+            WorkflowExecution execution = executionMapper.selectById(current.getWorkflowExecutionId());
+            if (execution == null || WorkflowStatus.valueOf(execution.getStatus()).isTerminal()) {
+                return;
+            }
 
-        int attemptNo = (current.getCurrentAttempt() == null ? 1 : current.getCurrentAttempt());
-        NodeType nodeType = NodeType.from(current.getNodeType());
+            int attemptNo = (current.getCurrentAttempt() == null ? 1 : current.getCurrentAttempt());
+            NodeType nodeType = NodeType.from(current.getNodeType());
 
-        eventService.append(current.getWorkflowExecutionId(), current.getId(), EventType.NODE_RETRY,
-                Map.of("nodeKey", current.getNodeKey(),
-                        "attempt", attemptNo,
-                        "reason", "LEASE_EXPIRED",
-                        "previousWorker", String.valueOf(current.getWorkerId())), null);
+            eventService.append(current.getWorkflowExecutionId(), current.getId(), EventType.NODE_RETRY,
+                    Map.of("nodeKey", current.getNodeKey(),
+                            "attempt", attemptNo,
+                            "reason", "LEASE_EXPIRED",
+                            "previousWorker", String.valueOf(current.getWorkerId())), null);
 
-        log.warn("node {} lease expired, worker={} attempt={} type={}",
-                current.getId(), current.getWorkerId(), attemptNo, nodeType);
+            log.warn("node {} lease expired, worker={} attempt={} type={}",
+                    current.getId(), current.getWorkerId(), attemptNo, nodeType);
 
-        if (nodeType.isAgentBacked()) {
-            // The agent node keeps its invocation, so the redispatch continues from the checkpoint.
-            current.setCurrentAttempt(attemptNo - 1);
-            redispatchAgent(current, execution);
-            return;
-        }
+            if (nodeType.isAgentBacked()) {
+                // The agent node keeps its invocation, so the redispatch continues from the checkpoint.
+                current.setCurrentAttempt(attemptNo - 1);
+                redispatchAgent(current, execution);
+                return;
+            }
 
-        // A normal node gets a new attempt. The retry policy decides whether that is allowed.
-        resultService.fail(current.getId(), attemptNo, current.getLeaseToken(),
-                "WORKER_LEASE_EXPIRED", "The worker stopped sending heartbeats",
-                "TRANSIENT", true, retryPolicyOf(current, execution));
+            // A normal node gets a new attempt. The retry policy decides whether that is allowed.
+            resultService.fail(current.getId(), attemptNo, current.getLeaseToken(),
+                    "WORKER_LEASE_EXPIRED", "The worker stopped sending heartbeats",
+                    "TRANSIENT", true, retryPolicyOf(current, execution));
+        });
     }
 
     /**

@@ -129,8 +129,11 @@ public class NodeResultService {
         boolean canRetry = retryable && attemptNo < maxAttempts;
         if (canRetry) {
             Duration delay = retryPolicy.delayFor(attemptNo);
+            // The moment the retry is due is persisted, so the node is only released when the
+            // delay of the policy really elapsed.
+            LocalDateTime nextRetryAt = LocalDateTime.now().plus(delay);
             int updated = nodeExecutionMapper.markRetryWait(nodeExecutionId, attemptNo, leaseToken,
-                    errorCode, errorMessage);
+                    errorCode, errorMessage, nextRetryAt);
             if (updated != 1) {
                 log.warn("node {} failure rejected, the lease or attempt no longer matches", nodeExecutionId);
                 return;
@@ -139,7 +142,7 @@ public class NodeResultService {
             eventService.append(node.getWorkflowExecutionId(), nodeExecutionId, EventType.NODE_FAILED,
                     Map.of("nodeKey", node.getNodeKey(), "attempt", attemptNo,
                             "errorCode", errorCode, "willRetry", true,
-                            "nextRetryAt", LocalDateTime.now().plus(delay).toString()), null);
+                            "nextRetryAt", nextRetryAt.toString()), null);
 
             MessageEnvelope<NodeFailedPayload> envelope = MessageEnvelope.create(
                     MessageType.NODE_FAILED,

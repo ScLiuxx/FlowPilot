@@ -119,6 +119,7 @@ public class ApprovalService {
             throw new BizException(ErrorCode.AP_ILLEGAL_STATE,
                     "The approval was already decided with " + approval.getStatus());
         }
+        requireOwnership(approval, approverId);
 
         String status = DECISION_APPROVED.equalsIgnoreCase(decision)
                 ? ApprovalRecord.STATUS_APPROVED : ApprovalRecord.STATUS_REJECTED;
@@ -292,11 +293,57 @@ public class ApprovalService {
     }
 
     public PageResult<ApprovalRecord> page(int page, int size, String status) {
+        return page(page, size, status, null);
+    }
+
+    /**
+     * The approvals of one user.
+     *
+     * <p>An approval belongs to the execution it belongs to, and an execution belongs to the user
+     * that started it. A user therefore only sees the approvals of their own executions.
+     */
+    public PageResult<ApprovalRecord> page(int page, int size, String status, Long userId) {
         LambdaQueryWrapper<ApprovalRecord> query = new LambdaQueryWrapper<ApprovalRecord>()
                 .eq(status != null && !status.isBlank(), ApprovalRecord::getStatus, status)
                 .orderByDesc(ApprovalRecord::getCreatedAt);
+        if (userId != null) {
+            List<Long> owned = ownedExecutionIds(userId);
+            if (owned.isEmpty()) {
+                // The user has no execution yet, so there is no approval either.
+                return PageResult.of(0L, page, size, List.of());
+            }
+            query.in(ApprovalRecord::getWorkflowExecutionId, owned);
+        }
         Page<ApprovalRecord> result = approvalMapper.selectPage(new Page<>(page, size), query);
         return PageResult.of(result.getTotal(), page, size, result.getRecords());
+    }
+
+    /**
+     * Makes sure the reviewer is allowed to decide this approval.
+     *
+     * <p>Without the check, a user could decide an approval of an execution that belongs to
+     * somebody else.
+     */
+    private void requireOwnership(ApprovalRecord approval, Long userId) {
+        if (userId == null) {
+            return;
+        }
+        WorkflowExecution execution = executionMapper.selectById(approval.getWorkflowExecutionId());
+        if (execution == null) {
+            throw new BizException(ErrorCode.EX_NOT_FOUND);
+        }
+        if (!execution.getUserId().equals(userId)) {
+            throw new BizException(ErrorCode.AP_FORBIDDEN);
+        }
+    }
+
+    /**
+     * The executions of one user.
+     */
+    private List<Long> ownedExecutionIds(Long userId) {
+        return executionMapper.findRecentByUser(userId, 1000).stream()
+                .map(WorkflowExecution::getId)
+                .toList();
     }
 
     /**

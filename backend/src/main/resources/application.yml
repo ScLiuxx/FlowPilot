@@ -103,6 +103,10 @@ flowpilot:
     id: ${WORKER_ID:worker-01}
     max-concurrency: 8
     lease-seconds: 60
+    # The worker extends the lease of a running node, so a node that takes longer than the
+    # lease duration is not taken over by the recovery scanner.
+    heartbeat-enabled: true
+    heartbeat-interval-seconds: 20
   recovery:
     enabled: true
     interval-ms: 15000

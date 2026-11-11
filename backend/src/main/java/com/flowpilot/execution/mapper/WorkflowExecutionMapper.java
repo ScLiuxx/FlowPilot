@@ -52,6 +52,15 @@ public interface WorkflowExecutionMapper extends BaseMapper<WorkflowExecution> {
     @Select("""
             SELECT * FROM workflow_execution
              WHERE user_id = #{userId}
+               AND idempotency_key = #{idempotencyKey}
+             LIMIT 1
+            """)
+    WorkflowExecution findByIdempotencyKey(@Param("userId") Long userId,
+                                            @Param("idempotencyKey") String idempotencyKey);
+
+    @Select("""
+            SELECT * FROM workflow_execution
+             WHERE user_id = #{userId}
              ORDER BY created_at DESC
              LIMIT #{limit}
             """)

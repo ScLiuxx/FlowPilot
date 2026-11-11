@@ -46,6 +46,9 @@ public class NodeExecution {
     private LocalDateTime leaseExpireAt;
     private LocalDateTime heartbeatAt;
 
+    /** The moment the node may be retried, persisted so the delay survives a restart. */
+    private LocalDateTime nextRetryAt;
+
     private String errorCode;
     private String errorMessage;
 

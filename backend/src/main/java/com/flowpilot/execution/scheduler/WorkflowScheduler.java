@@ -55,6 +55,10 @@ public class WorkflowScheduler {
     private final OutboxService outboxService;
     private final AgentNodeDispatcher agentNodeDispatcher;
 
+    /** The number of nodes one workflow may run at the same time. */
+    @org.springframework.beans.factory.annotation.Value("${flowpilot.worker.max-concurrency:8}")
+    private int maxConcurrency;
+
     /**
      * Entry point for a freshly created execution: finds the start nodes and schedules them.
      */
@@ -100,6 +104,7 @@ public class WorkflowScheduler {
             return;
         }
         WorkflowDefinitionDocument document = loadDocument(execution);
+        applyBranchSelection(executionId, document, nodeKey);
         List<String> successors = dependencyResolver.successors(document, nodeKey);
         for (String successorKey : successors) {
             NodeExecution successor = nodeExecutionMapper.findByExecutionAndKey(executionId, successorKey);
@@ -116,6 +121,63 @@ public class WorkflowScheduler {
             dispatch(successor, definition, document, execution);
         }
         checkCompletion(executionId);
+    }
+
+    /**
+     * Skips the nodes of the branches a condition did not select.
+     *
+     * <p>A condition node names its branches in the config. The nodes of the branches that were
+     * not selected are skipped, so the workflow does not wait for a node that was never meant to
+     * run. Without this, such a node would stay pending and the workflow would never finish.
+     */
+    private void applyBranchSelection(Long executionId, WorkflowDefinitionDocument document,
+                                      String nodeKey) {
+        WorkflowNodeDefinition definition = dependencyResolver.findNode(document, nodeKey);
+        if (definition == null || !NodeType.CONDITION.name().equalsIgnoreCase(definition.getType())) {
+            return;
+        }
+        NodeExecution condition = nodeExecutionMapper.findByExecutionAndKey(executionId, nodeKey);
+        if (condition == null || condition.getOutputJson() == null) {
+            return;
+        }
+        Map<String, Object> output = JsonUtils.toMap(condition.getOutputJson());
+        Object branch = output.get("branch");
+        if (branch == null) {
+            return;
+        }
+        String selected = String.valueOf(branch);
+
+        // Every node that belongs to a branch of this condition, no matter which one.
+        List<String> allBranches = new ArrayList<>();
+        Object branches = definition.config().get("branches");
+        if (branches instanceof Map<?, ?> map) {
+            map.values().forEach(nodes -> {
+                if (nodes instanceof Iterable<?> iterable) {
+                    iterable.forEach(item -> allBranches.add(String.valueOf(item)));
+                }
+            });
+        }
+        if (allBranches.isEmpty()) {
+            return;
+        }
+
+        // The nodes of the selected branch are the ones that stay, everything else is skipped.
+        List<String> selectedNodes = dependencyResolver.branchNodes(definition, selected);
+        for (String candidate : allBranches) {
+            if (selectedNodes.contains(candidate)) {
+                continue;
+            }
+            NodeExecution node = nodeExecutionMapper.findByExecutionAndKey(executionId, candidate);
+            if (node == null) {
+                continue;
+            }
+            if (nodeExecutionMapper.skip(node.getId()) == 1) {
+                eventService.append(executionId, node.getId(), EventType.NODE_SKIPPED,
+                        Map.of("nodeKey", candidate, "reason", "BRANCH_NOT_SELECTED",
+                                "selectedBranch", selected), null);
+                log.info("node {} skipped, the branch {} was selected", candidate, selected);
+            }
+        }
     }
 
     /**
@@ -148,6 +210,13 @@ public class WorkflowScheduler {
                           WorkflowNodeDefinition definition,
                           WorkflowDefinitionDocument document,
                           WorkflowExecution execution) {
+        if (!hasCapacity(execution.getId())) {
+            // The workflow reached its concurrency limit. The node stays pending and is picked up
+            // again when another node of the workflow finishes.
+            log.debug("workflow {} reached its concurrency limit, node {} stays pending",
+                    execution.getId(), node.getNodeKey());
+            return;
+        }
         Map<String, Object> input = buildNodeInput(execution, definition);
         int updated = nodeExecutionMapper.markReady(node.getId(), JsonUtils.toJson(input));
         if (updated != 1) {
@@ -159,6 +228,26 @@ public class WorkflowScheduler {
         eventService.append(node.getWorkflowExecutionId(), node.getId(), EventType.NODE_READY,
                 Map.of("nodeKey", node.getNodeKey(), "nodeType", node.getNodeType()), null);
         publishNodeExecute(node, definition, execution, input);
+    }
+
+    /**
+     * Whether the workflow may start another node.
+     *
+     * <p>The limit keeps a single workflow from occupying the whole worker pool, so a long
+     * running workflow cannot starve the others.
+     */
+    private boolean hasCapacity(Long executionId) {
+        if (maxConcurrency <= 0) {
+            return true;
+        }
+        int active = 0;
+        for (NodeExecution node : executionService.nodes(executionId)) {
+            NodeStatus status = NodeStatus.valueOf(node.getStatus());
+            if (status == NodeStatus.RUNNING || status == NodeStatus.READY) {
+                active++;
+            }
+        }
+        return active < maxConcurrency;
     }
 
     private void publishNodeExecute(NodeExecution node,
@@ -301,11 +390,13 @@ public class WorkflowScheduler {
             return;
         }
 
-        if (anyFailed) {
-            failWorkflow(execution, nodes);
+        // A node that is still running is awaited first. The workflow only fails once nothing is
+        // active any more, so the result of a running node is not thrown away.
+        if (anyActive) {
             return;
         }
-        if (anyActive) {
+        if (anyFailed) {
+            failWorkflow(execution, nodes);
             return;
         }
         if (anyWaitingHuman) {
@@ -352,7 +443,8 @@ public class WorkflowScheduler {
         List<String> cancelled = new ArrayList<>();
         for (NodeExecution node : nodes) {
             NodeStatus status = NodeStatus.valueOf(node.getStatus());
-            if (status == NodeStatus.PENDING || status == NodeStatus.READY || status == NodeStatus.RETRY_WAIT) {
+            if (status == NodeStatus.PENDING || status == NodeStatus.READY
+                    || status == NodeStatus.RETRY_WAIT || status == NodeStatus.WAITING_HUMAN) {
                 nodeExecutionMapper.cancel(node.getId());
                 cancelled.add(node.getNodeKey());
             }

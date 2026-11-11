@@ -33,6 +33,9 @@ public class DependencyResolver {
 
     /**
      * @return true when all dependencies of the node succeeded
+     *
+     * <p>A dependency that was skipped does not block the node: the branch it belongs to was not
+     * selected, so the node that waits for it must not wait forever either.
      */
     public boolean canExecute(NodeExecution node, WorkflowDefinitionDocument document) {
         WorkflowNodeDefinition definition = findNode(document, node.getNodeKey());
@@ -46,7 +49,7 @@ public class DependencyResolver {
         Map<String, NodeStatus> statuses = loadStatuses(node.getWorkflowExecutionId());
         for (String dependency : dependencies) {
             NodeStatus status = statuses.get(dependency);
-            if (status != NodeStatus.SUCCEEDED) {
+            if (status != NodeStatus.SUCCEEDED && status != NodeStatus.SKIPPED) {
                 return false;
             }
         }
@@ -88,6 +91,32 @@ public class DependencyResolver {
             }
         }
         return starts;
+    }
+
+    /**
+     * Returns the nodes that belong to a branch of a condition node.
+     *
+     * <p>The condition node declares its branches in the config:
+     *
+     * <pre>
+     *   "config": { "expression": "x == 1", "branches": { "true": ["a"], "false": ["b"] } }
+     * </pre>
+     *
+     * <p>A node that is not mentioned in any branch belongs to no branch, so it is never skipped.
+     */
+    public List<String> branchNodes(WorkflowNodeDefinition condition, String branch) {
+        Map<String, Object> config = condition.config();
+        Object branches = config.get("branches");
+        if (!(branches instanceof Map<?, ?> map)) {
+            return List.of();
+        }
+        Object nodes = map.get(branch);
+        if (!(nodes instanceof Iterable<?> iterable)) {
+            return List.of();
+        }
+        List<String> keys = new ArrayList<>();
+        iterable.forEach(item -> keys.add(String.valueOf(item)));
+        return keys;
     }
 
     public WorkflowNodeDefinition findNode(WorkflowDefinitionDocument document, String nodeKey) {

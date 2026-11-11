@@ -63,6 +63,7 @@ public interface NodeExecutionMapper extends BaseMapper<NodeExecution> {
     @Update("""
             UPDATE node_execution
                SET status = 'READY',
+                   next_retry_at = NULL,
                    version = version + 1,
                    updated_at = CURRENT_TIMESTAMP(3)
              WHERE id = #{id}
@@ -141,12 +142,16 @@ public interface NodeExecutionMapper extends BaseMapper<NodeExecution> {
 
     /**
      * Marks the node as waiting for a retry.
+     *
+     * <p>The moment the node may be retried is stored with the state, so the delay survives a
+     * restart and the scheduler can pick the node up exactly when it is due.
      */
     @Update("""
             UPDATE node_execution
                SET status = 'RETRY_WAIT',
                    error_code = #{errorCode},
                    error_message = #{errorMessage},
+                   next_retry_at = #{nextRetryAt},
                    lease_expire_at = NULL,
                    version = version + 1,
                    updated_at = CURRENT_TIMESTAMP(3)
@@ -159,7 +164,8 @@ public interface NodeExecutionMapper extends BaseMapper<NodeExecution> {
                       @Param("attemptNo") Integer attemptNo,
                       @Param("leaseToken") Long leaseToken,
                       @Param("errorCode") String errorCode,
-                      @Param("errorMessage") String errorMessage);
+                      @Param("errorMessage") String errorMessage,
+                      @Param("nextRetryAt") LocalDateTime nextRetryAt);
 
     /**
      * Marks the node as terminally failed.
@@ -284,6 +290,20 @@ public interface NodeExecutionMapper extends BaseMapper<NodeExecution> {
             """)
     int cancel(@Param("id") Long id);
 
+    /**
+     * Skips a node because the branch of its condition was not selected.
+     */
+    @Update("""
+            UPDATE node_execution
+               SET status = 'SKIPPED',
+                   finished_at = CURRENT_TIMESTAMP(3),
+                   version = version + 1,
+                   updated_at = CURRENT_TIMESTAMP(3)
+             WHERE id = #{id}
+               AND status = 'PENDING'
+            """)
+    int skip(@Param("id") Long id);
+
     @Select("""
             SELECT * FROM node_execution
              WHERE status = 'RUNNING'
@@ -297,8 +317,9 @@ public interface NodeExecutionMapper extends BaseMapper<NodeExecution> {
     @Select("""
             SELECT * FROM node_execution
              WHERE status = 'RETRY_WAIT'
-             ORDER BY updated_at
+               AND (next_retry_at IS NULL OR next_retry_at <= #{now})
+             ORDER BY next_retry_at
              LIMIT #{limit}
             """)
-    List<NodeExecution> findRetryWaiting(@Param("limit") int limit);
+    List<NodeExecution> findRetryWaiting(@Param("now") LocalDateTime now, @Param("limit") int limit);
 }

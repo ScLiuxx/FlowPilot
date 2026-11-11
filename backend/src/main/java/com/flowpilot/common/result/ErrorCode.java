@@ -49,10 +49,11 @@ public enum ErrorCode {
     EX_FORBIDDEN(40320, "Not allowed to access this execution"),
 
     // ---- messaging ----
-    MQ_PUBLISH_FAILED(50010, "Failed to publish message"),
-    MQ_CONSUME_FAILED(50011, "Failed to consume message"),
-    MQ_UNSUPPORTED_SCHEMA(40010, "Unsupported message schema version"),
-    MQ_INVALID_ENVELOPE(40011, "Invalid message envelope"),
+    // The messaging codes use the 15 offset, so they never collide with the workflow codes.
+    MQ_PUBLISH_FAILED(50015, "Failed to publish message"),
+    MQ_CONSUME_FAILED(50016, "Failed to consume message"),
+    MQ_UNSUPPORTED_SCHEMA(40015, "Unsupported message schema version"),
+    MQ_INVALID_ENVELOPE(40016, "Invalid message envelope"),
 
     // ---- agent ----
     AG_INVOCATION_NOT_FOUND(40430, "Agent invocation not found"),

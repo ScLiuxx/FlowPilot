@@ -66,12 +66,38 @@ public class WorkflowExecutionService {
 
     /**
      * Starts a new execution of a published workflow version.
+     *
+     * <p>When the caller provides an idempotency key, a repeated request returns the execution
+     * that was started with the same key instead of starting a second one.
      */
     @Transactional
     public WorkflowExecution start(WorkflowVersion version,
                                    WorkflowDefinitionDocument document,
                                    Long userId,
                                    Map<String, Object> input) {
+        return start(version, document, userId, input, null);
+    }
+
+    /**
+     * Starts a new execution, or returns the existing one for a repeated idempotency key.
+     */
+    @Transactional
+    public WorkflowExecution start(WorkflowVersion version,
+                                   WorkflowDefinitionDocument document,
+                                   Long userId,
+                                   Map<String, Object> input,
+                                   String idempotencyKey) {
+        String key = idempotencyKey == null || idempotencyKey.isBlank()
+                ? null : idempotencyKey.trim();
+        if (key != null) {
+            WorkflowExecution existing = executionMapper.findByIdempotencyKey(userId, key);
+            if (existing != null) {
+                log.info("the idempotency key {} was used before, returning execution {}",
+                        key, existing.getId());
+                return existing;
+            }
+        }
+
         Long executionId = idGenerator.nextId();
         WorkflowExecution execution = WorkflowExecution.builder()
                 .id(executionId)
@@ -79,7 +105,9 @@ public class WorkflowExecutionService {
                 .workflowVersionId(version.getId())
                 .userId(userId)
                 .executionNo(buildExecutionNo(executionId))
-                .status(WorkflowStatus.CREATED.name())
+                // The execution waits in the queue until the scheduler picks it up.
+                .status(WorkflowStatus.QUEUED.name())
+                .idempotencyKey(key)
                 .inputJson(JsonUtils.toJson(input == null ? Map.of() : input))
                 .currentNodeCount(0)
                 .completedNodeCount(0)

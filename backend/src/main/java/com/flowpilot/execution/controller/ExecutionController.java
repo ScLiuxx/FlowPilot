@@ -71,6 +71,9 @@ public class ExecutionController {
             @PathVariable Long workflowId,
             @Valid @RequestBody ExecutionDtos.StartExecutionRequest request) {
         Long userId = CurrentUser.requireId();
+        // Only the owner of a workflow may run it. The workflows of the platform are visible to
+        // everybody and can be run by everybody.
+        workflowService.requireOwned(workflowId, userId);
         WorkflowVersion version = request.getWorkflowVersionId() == null
                 ? workflowService.getPublishedVersion(workflowId)
                 : workflowService.getVersion(workflowId, request.getWorkflowVersionId());
@@ -78,7 +81,8 @@ public class ExecutionController {
             throw new BizException(ErrorCode.WF_VERSION_NOT_PUBLISHED);
         }
         var document = workflowService.parse(version.getDefinitionJson());
-        WorkflowExecution execution = executionService.start(version, document, userId, request.getInput());
+        WorkflowExecution execution = executionService.start(version, document, userId,
+                request.getInput(), request.getIdempotencyKey());
         return Result.success(ExecutionDtos.StartExecutionResponse.builder()
                 .executionId(Ids.of(execution.getId()))
                 .executionNo(execution.getExecutionNo())

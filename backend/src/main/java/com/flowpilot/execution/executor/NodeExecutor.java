@@ -15,6 +15,9 @@ public interface NodeExecutor {
     /**
      * Executes the node. Implementations must not throw for expected business failures; they
      * return a failed {@link NodeResult} instead. Unexpected exceptions are caught by the worker.
+     *
+     * <p>A long running implementation calls the heartbeat of the context while it works, so the
+     * lease of the node does not expire while the worker is still busy.
      */
     NodeResult execute(NodeContext context);
 }

@@ -105,7 +105,10 @@ public class RabbitConfig {
 
     @Bean
     public Binding backendAgentEventsBinding(Queue backendAgentEventsQueue, TopicExchange flowpilotExchange) {
-        return BindingBuilder.bind(backendAgentEventsQueue).to(flowpilotExchange).with("agent.*");
+        // Only the result events reach the backend. The commands travel to the agent service.
+        BindingBuilder.bind(backendAgentEventsQueue).to(flowpilotExchange).with("agent.completed");
+        BindingBuilder.bind(backendAgentEventsQueue).to(flowpilotExchange).with("agent.failed");
+        return BindingBuilder.bind(backendAgentEventsQueue).to(flowpilotExchange).with("agent.interrupted");
     }
 
     @Bean

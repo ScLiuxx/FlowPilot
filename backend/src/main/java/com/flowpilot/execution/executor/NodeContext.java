@@ -7,6 +7,7 @@ import lombok.Builder;
 import lombok.Data;
 
 import java.util.Map;
+import java.util.function.BooleanSupplier;
 
 /**
  * Everything a node executor needs to run one node.
@@ -38,6 +39,21 @@ public class NodeContext {
     private String workerId;
 
     private Integer timeoutSeconds;
+
+    /**
+     * Extends the lease of the node, so a long running executor is not mistaken for a worker that
+     * died. It returns false when the lease was lost, which means the result must not be committed.
+     */
+    private BooleanSupplier heartbeat;
+
+    /**
+     * Extends the lease of the node.
+     *
+     * @return false when the lease was lost
+     */
+    public boolean sendHeartbeat() {
+        return heartbeat != null && Boolean.TRUE.equals(heartbeat.getAsBoolean());
+    }
 
     public static NodeContext from(NodeExecution node,
                                    WorkflowNodeDefinition definition,

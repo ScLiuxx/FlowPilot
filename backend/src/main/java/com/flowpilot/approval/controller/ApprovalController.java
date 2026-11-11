@@ -37,8 +37,10 @@ public class ApprovalController {
             @RequestParam(defaultValue = "1") int page,
             @RequestParam(defaultValue = "20") int size,
             @RequestParam(required = false) String status) {
+        // A user only sees the approvals of their own executions.
+        Long userId = CurrentUser.isAdmin() ? null : CurrentUser.requireId();
         PageResult<ApprovalRecord> result = approvalService.page(page, size,
-                status == null || status.isBlank() ? "PENDING" : status);
+                status == null || status.isBlank() ? "PENDING" : status, userId);
         List<Map<String, Object>> records = result.getRecords().stream()
                 .map(ApprovalController::toResponse)
                 .toList();

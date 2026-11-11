@@ -32,6 +32,9 @@ public class WorkflowExecution {
     private String executionNo;
     private String status;
 
+    /** The key of the caller, which makes a repeated start request idempotent. */
+    private String idempotencyKey;
+
     private String inputJson;
     private String outputJson;
 

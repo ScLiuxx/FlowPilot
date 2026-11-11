@@ -76,6 +76,10 @@ CREATE TABLE IF NOT EXISTS workflow_execution (
     execution_no VARCHAR(64) NOT NULL,
     status VARCHAR(32) NOT NULL,
 
+    -- The key of the caller. A repeated request with the same key returns the same execution
+    -- instead of starting a second one.
+    idempotency_key VARCHAR(128),
+
     input_json JSON,
     output_json JSON,
 
@@ -102,6 +106,7 @@ CREATE TABLE IF NOT EXISTS workflow_execution (
         ON UPDATE CURRENT_TIMESTAMP(3),
 
     UNIQUE KEY uk_execution_no (execution_no),
+    UNIQUE KEY uk_execution_idempotency (user_id, idempotency_key),
     KEY idx_user_created (user_id, created_at),
     KEY idx_workflow_status (workflow_id, status),
     KEY idx_status_created (status, created_at)
@@ -129,6 +134,10 @@ CREATE TABLE IF NOT EXISTS node_execution (
     lease_expire_at DATETIME(3),
     heartbeat_at DATETIME(3),
 
+    -- The moment the node may be retried. The delay of the retry policy is persisted here
+    -- instead of being slept on in a worker thread.
+    next_retry_at DATETIME(3),
+
     error_code VARCHAR(64),
     error_message TEXT,
 
@@ -147,6 +156,7 @@ CREATE TABLE IF NOT EXISTS node_execution (
     ),
 
     KEY idx_status_lease (status, lease_expire_at),
+    KEY idx_status_retry (status, next_retry_at),
     KEY idx_workflow_status (workflow_execution_id, status),
     KEY idx_worker_status (worker_id, status)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;

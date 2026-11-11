@@ -229,7 +229,18 @@ class ExecutionEngineIntegrationTest {
         assertThat(recovered.getStatus()).isEqualTo(NodeStatus.RETRY_WAIT.name());
         assertThat(recovered.getErrorCode()).isEqualTo("WORKER_LEASE_EXPIRED");
 
-        // The retry delay elapses and the node becomes ready again.
+        // The delay of the retry policy is persisted, so the node is not released before it
+        // elapsed.
+        assertThat(recovered.getNextRetryAt()).isNotNull();
+        assertThat(recovered.getNextRetryAt()).isAfter(java.time.LocalDateTime.now());
+
+        retryScheduler.release(nodeExecutionMapper.selectById(node.getId()));
+        assertThat(nodeExecutionMapper.selectById(node.getId()).getStatus())
+                .as("the node waits for the retry delay")
+                .isEqualTo(NodeStatus.RETRY_WAIT.name());
+
+        // Once the delay elapsed, the node becomes ready again.
+        expireRetryDelay(node.getId());
         retryScheduler.release(nodeExecutionMapper.selectById(node.getId()));
         assertThat(nodeExecutionMapper.selectById(node.getId()).getStatus())
                 .isEqualTo(NodeStatus.READY.name());
@@ -288,6 +299,86 @@ class ExecutionEngineIntegrationTest {
         });
     }
 
+    @Test
+    @DisplayName("T07: the retry delay of the policy is persisted and honoured")
+    void theRetryDelayIsPersisted() {
+        Long userId = 9007L;
+        WorkflowDefinitionDocument document = definition(
+                node("a", "CODE", Map.of("operation", "identity"), List.of()));
+
+        var workflow = workflowService.create("retry delay", null, "TEST", userId, document);
+        var version = workflowService.listVersions(workflow.getId()).get(0);
+        workflowService.publish(workflow.getId(), version.getId(), userId);
+        var published = workflowService.getPublishedVersion(workflow.getId());
+
+        WorkflowExecution execution = executionService.start(published, document, userId, Map.of());
+        scheduler.onWorkflowStarted(execution.getId());
+
+        NodeExecution node = findNode(executionService.nodes(execution.getId()), "a");
+        Long leaseToken = acquireLease(node, 1, node.getCurrentAttempt());
+
+        resultService().fail(node.getId(), 1, leaseToken, "HTTP_TIMEOUT", "the request timed out",
+                "TRANSIENT", true, null);
+
+        NodeExecution waiting = nodeExecutionMapper.selectById(node.getId());
+        assertThat(waiting.getStatus()).isEqualTo(NodeStatus.RETRY_WAIT.name());
+        assertThat(waiting.getNextRetryAt())
+                .as("the moment of the next attempt is persisted")
+                .isNotNull()
+                .isAfter(java.time.LocalDateTime.now());
+
+        // The node is only released once the delay elapsed.
+        retryScheduler.release(waiting);
+        assertThat(nodeExecutionMapper.selectById(node.getId()).getStatus())
+                .isEqualTo(NodeStatus.RETRY_WAIT.name());
+
+        expireRetryDelay(node.getId());
+        retryScheduler.release(nodeExecutionMapper.selectById(node.getId()));
+        assertThat(nodeExecutionMapper.selectById(node.getId()).getStatus())
+                .isEqualTo(NodeStatus.READY.name());
+        assertThat(nodeExecutionMapper.selectById(node.getId()).getNextRetryAt())
+                .as("the pending retry is cleared once the node runs again")
+                .isNull();
+    }
+
+    @Test
+    @DisplayName("T04: the branch a condition did not select is skipped")
+    void theBranchThatWasNotSelectedIsSkipped() {
+        Long userId = 9008L;
+        WorkflowDefinitionDocument document = definition(
+                node("check", "CONDITION", Map.of(
+                        "expression", "count == 1",
+                        "branches", Map.of("true", List.of("taken"), "false", List.of("skipped"))),
+                        List.of()),
+                node("taken", "CODE", Map.of("operation", "identity"), List.of("check")),
+                node("skipped", "CODE", Map.of("operation", "identity"), List.of("check")));
+
+        var workflow = workflowService.create("branching", null, "TEST", userId, document);
+        var version = workflowService.listVersions(workflow.getId()).get(0);
+        workflowService.publish(workflow.getId(), version.getId(), userId);
+        var published = workflowService.getPublishedVersion(workflow.getId());
+
+        WorkflowExecution execution = executionService.start(published, document, userId,
+                Map.of("count", 1));
+        scheduler.onWorkflowStarted(execution.getId());
+
+        NodeExecution condition = findNode(executionService.nodes(execution.getId()), "check");
+        Long leaseToken = acquireLease(condition, 1, condition.getCurrentAttempt());
+        resultService().complete(condition.getId(), 1, leaseToken,
+                Map.of("matched", true, "branch", "true"));
+        scheduler.onNodeCompleted(execution.getId(), "check");
+
+        NodeExecution skipped = findNode(executionService.nodes(execution.getId()), "skipped");
+        assertThat(skipped.getStatus())
+                .as("the branch that was not selected is skipped")
+                .isEqualTo(NodeStatus.SKIPPED.name());
+
+        NodeExecution taken = findNode(executionService.nodes(execution.getId()), "taken");
+        assertThat(taken.getStatus())
+                .as("the selected branch runs")
+                .isEqualTo(NodeStatus.READY.name());
+    }
+
     /**
      * Simulates a worker that died: the lease expires without a heartbeat.
      */
@@ -295,6 +386,17 @@ class ExecutionEngineIntegrationTest {
         transactionTemplate.executeWithoutResult(status -> {
             NodeExecution node = nodeExecutionMapper.selectById(nodeExecutionId);
             node.setLeaseExpireAt(java.time.LocalDateTime.now().minusMinutes(5));
+            nodeExecutionMapper.updateById(node);
+        });
+    }
+
+    /**
+     * Simulates that the delay of the retry policy elapsed.
+     */
+    private void expireRetryDelay(Long nodeExecutionId) {
+        transactionTemplate.executeWithoutResult(status -> {
+            NodeExecution node = nodeExecutionMapper.selectById(nodeExecutionId);
+            node.setNextRetryAt(java.time.LocalDateTime.now().minusMinutes(1));
             nodeExecutionMapper.updateById(node);
         });
     }

@@ -6,6 +6,8 @@ import org.junit.jupiter.api.Test;
 import org.springframework.http.HttpStatus;
 
 import java.lang.reflect.Method;
+import java.util.LinkedHashMap;
+import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -52,6 +54,18 @@ class ErrorCodeHttpMappingTest {
         assertThat(statusOf(ErrorCode.WF_VALIDATION_ERROR)).isEqualTo(HttpStatus.BAD_REQUEST);
         assertThat(statusOf(ErrorCode.COMMON_INTERNAL_ERROR)).isEqualTo(HttpStatus.INTERNAL_SERVER_ERROR);
         assertThat(statusOf(ErrorCode.MQ_PUBLISH_FAILED)).isEqualTo(HttpStatus.INTERNAL_SERVER_ERROR);
+    }
+
+    @Test
+    @DisplayName("every error code has its own number")
+    void errorCodesAreUnique() {
+        Map<Integer, ErrorCode> byNumber = new LinkedHashMap<>();
+        for (ErrorCode code : ErrorCode.values()) {
+            ErrorCode previous = byNumber.put(code.getCode(), code);
+            assertThat(previous)
+                    .as("the code %d is used by %s and %s", code.getCode(), previous, code)
+                    .isNull();
+        }
     }
 
     private HttpStatus statusOf(ErrorCode code) {

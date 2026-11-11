@@ -32,6 +32,10 @@ import org.springframework.stereotype.Component;
 import java.time.LocalDateTime;
 import java.util.LinkedHashMap;
 import java.util.Map;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.ScheduledFuture;
+import java.util.concurrent.TimeUnit;
 
 /**
  * Executes a node on behalf of the worker pool.
@@ -57,6 +61,14 @@ public class NodeWorker {
 
     @Value("${flowpilot.worker.id:worker-01}")
     private String workerId;
+
+    /** Whether the worker extends the lease of a running node. */
+    @Value("${flowpilot.worker.heartbeat-enabled:true}")
+    private boolean heartbeatEnabled;
+
+    /** The interval between two heartbeats. It has to be shorter than the lease duration. */
+    @Value("${flowpilot.worker.heartbeat-interval-seconds:20}")
+    private long heartbeatIntervalSeconds;
 
     /**
      * Handles one NodeExecute message.
@@ -100,6 +112,10 @@ public class NodeWorker {
         NodeExecution refreshed = nodeExecutionMapper.selectById(nodeExecutionId);
         resultService.startAttempt(refreshed, effectiveAttempt, leaseToken, workerId);
 
+        // The lease is extended while the node runs, so a node that takes longer than the lease
+        // duration is not mistaken for a worker that died.
+        Heartbeat heartbeat = startHeartbeat(refreshed, leaseToken);
+
         try {
             WorkflowDefinitionDocument document = loadDocument(refreshed.getWorkflowExecutionId());
             WorkflowNodeDefinition definition = findNode(document, refreshed.getNodeKey());
@@ -138,6 +154,60 @@ public class NodeWorker {
             resultService.fail(refreshed.getId(), effectiveAttempt, leaseToken,
                     "NODE_UNEXPECTED_ERROR", ex.getMessage(), ErrorCategory.INTERNAL.name(), true,
                     null);
+        } finally {
+            heartbeat.stop();
+        }
+    }
+
+    /**
+     * Starts the heartbeat that keeps the lease of a running node alive.
+     */
+    private Heartbeat startHeartbeat(NodeExecution node, Long leaseToken) {
+        if (!heartbeatEnabled) {
+            return Heartbeat.disabled();
+        }
+        ScheduledExecutorService scheduler = Executors.newSingleThreadScheduledExecutor(r -> {
+            Thread thread = new Thread(r, "heartbeat-" + node.getNodeKey());
+            thread.setDaemon(true);
+            return thread;
+        });
+        ScheduledFuture<?> task = scheduler.scheduleAtFixedRate(() -> {
+            try {
+                if (!leaseManager.heartbeat(node, workerId, leaseToken)) {
+                    log.warn("the lease of node {} was lost, its result will not be committed",
+                            node.getNodeKey());
+                }
+            } catch (Exception ex) {
+                log.warn("the heartbeat of node {} failed: {}", node.getNodeKey(), ex.getMessage());
+            }
+        }, heartbeatIntervalSeconds, heartbeatIntervalSeconds, TimeUnit.SECONDS);
+        return new Heartbeat(scheduler, task);
+    }
+
+    /**
+     * The heartbeat of one running node.
+     */
+    private static final class Heartbeat {
+
+        private final ScheduledExecutorService scheduler;
+        private final ScheduledFuture<?> task;
+
+        private Heartbeat(ScheduledExecutorService scheduler, ScheduledFuture<?> task) {
+            this.scheduler = scheduler;
+            this.task = task;
+        }
+
+        static Heartbeat disabled() {
+            return new Heartbeat(null, null);
+        }
+
+        void stop() {
+            if (task != null) {
+                task.cancel(false);
+            }
+            if (scheduler != null) {
+                scheduler.shutdownNow();
+            }
         }
     }
 
@@ -189,6 +259,9 @@ public class NodeWorker {
                 .attemptNo(attemptNo)
                 .leaseToken(leaseToken)
                 .workerId(workerId)
+                // A long running node extends its lease while it works, so the recovery scanner
+                // does not mistake a busy worker for a worker that died.
+                .heartbeat(() -> leaseManager.heartbeat(node, workerId, leaseToken))
                 .build();
     }
 
