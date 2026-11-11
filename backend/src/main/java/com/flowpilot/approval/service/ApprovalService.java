@@ -48,6 +48,11 @@ public class ApprovalService {
     public static final String DECISION_APPROVED = "APPROVED";
     public static final String DECISION_REJECTED = "REJECTED";
 
+    /** The workflow fails when the approval expires. */
+    public static final String TIMEOUT_ACTION_FAIL = "FAIL";
+    /** The workflow continues as if the reviewer had agreed. */
+    public static final String TIMEOUT_ACTION_AUTO_APPROVE = "AUTO_APPROVE";
+
     private final ApprovalRecordMapper approvalMapper;
     private final AgentInvocationMapper invocationMapper;
     private final AgentInvocationService invocationService;
@@ -57,6 +62,18 @@ public class ApprovalService {
     private final ExecutionEventService eventService;
     private final WorkflowScheduler scheduler;
     private final SnowflakeIdGenerator idGenerator;
+
+    /**
+     * The default deadline of an approval in minutes. Zero means that an approval waits forever.
+     */
+    @org.springframework.beans.factory.annotation.Value("${flowpilot.approval.timeout-minutes:1440}")
+    private long defaultTimeoutMinutes;
+
+    /**
+     * The action that is taken when an approval expires.
+     */
+    @org.springframework.beans.factory.annotation.Value("${flowpilot.approval.timeout-action:FAIL}")
+    private String defaultTimeoutAction;
 
     /**
      * Creates a pending approval for a node that waits for a human.
@@ -80,6 +97,8 @@ public class ApprovalService {
                 .description(description)
                 .requestData(JsonUtils.toJson(requestData == null ? Map.of() : requestData))
                 .requestedAt(LocalDateTime.now())
+                .expireAt(resolveExpireAt(requestData))
+                .timeoutAction(resolveTimeoutAction(requestData))
                 .createdAt(LocalDateTime.now())
                 .build();
         approvalMapper.insert(record);
@@ -351,5 +370,91 @@ public class ApprovalService {
      */
     public NodeExecution nodeOf(ApprovalRecord approval) {
         return nodeExecutionMapper.selectById(approval.getNodeExecutionId());
+    }
+
+    /**
+     * Expires an approval whose deadline elapsed.
+     *
+     * <p>The deadline handling is part of the approval contract of the architecture design. An
+     * approval that nobody answers must not block the workflow forever, so the approval is closed
+     * and the workflow either continues or fails, depending on the configured action.
+     *
+     * @return true when this call expired the approval
+     */
+    @Transactional
+    public boolean expire(ApprovalRecord approval) {
+        if (!ApprovalRecord.STATUS_PENDING.equals(approval.getStatus())) {
+            return false;
+        }
+        Map<String, Object> decisionData = new LinkedHashMap<>();
+        decisionData.put("approved", false);
+        decisionData.put("decision", ApprovalRecord.STATUS_EXPIRED);
+        decisionData.put("expired", true);
+
+        String comment = "The approval was not answered before its deadline";
+        int updated = approvalMapper.expire(approval.getId(), JsonUtils.toJson(decisionData), comment);
+        if (updated != 1) {
+            // A reviewer decided it in the meantime.
+            return false;
+        }
+
+        eventService.append(approval.getWorkflowExecutionId(), approval.getNodeExecutionId(),
+                EventType.APPROVAL_EXPIRED,
+                Map.of("approvalId", Ids.of(approval.getId()),
+                        "timeoutAction", approval.getTimeoutAction() == null
+                                ? TIMEOUT_ACTION_FAIL : approval.getTimeoutAction()), null);
+
+        if (TIMEOUT_ACTION_AUTO_APPROVE.equals(approval.getTimeoutAction())) {
+            resume(approval, "The approval expired and was approved automatically");
+        } else {
+            failExecution(approval, comment);
+        }
+
+        log.info("approval expired approvalId={} action={}", approval.getId(),
+                approval.getTimeoutAction());
+        return true;
+    }
+
+    /**
+     * The deadline of an approval.
+     *
+     * <p>The node configuration may carry {@code timeoutMinutes}. Without it the global default
+     * applies, and a default of zero means that the approval waits forever.
+     */
+    private LocalDateTime resolveExpireAt(Map<String, Object> requestData) {
+        long minutes = defaultTimeoutMinutes;
+        if (requestData != null) {
+            Object configured = requestData.get("timeoutMinutes");
+            if (configured != null) {
+                try {
+                    minutes = Long.parseLong(String.valueOf(configured));
+                } catch (NumberFormatException ex) {
+                    log.warn("the timeout of the approval is not a number: {}", configured);
+                }
+            }
+        }
+        if (minutes <= 0) {
+            return null;
+        }
+        return LocalDateTime.now().plusMinutes(minutes);
+    }
+
+    /**
+     * The action that is taken when the approval expires.
+     */
+    private String resolveTimeoutAction(Map<String, Object> requestData) {
+        if (requestData != null) {
+            Object configured = requestData.get("timeoutAction");
+            if (configured != null) {
+                String action = String.valueOf(configured).trim().toUpperCase(java.util.Locale.ROOT);
+                if (TIMEOUT_ACTION_AUTO_APPROVE.equals(action)) {
+                    return action;
+                }
+                if (TIMEOUT_ACTION_FAIL.equals(action)) {
+                    return action;
+                }
+            }
+        }
+        return defaultTimeoutAction;
     }
 }

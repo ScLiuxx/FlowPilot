@@ -28,3 +28,6 @@ Thumbs.db
 
 # Uploads
 .uploads/
+
+# Local Redis snapshot of the development instance
+dump.rdb

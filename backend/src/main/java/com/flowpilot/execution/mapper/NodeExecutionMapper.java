@@ -322,4 +322,60 @@ public interface NodeExecutionMapper extends BaseMapper<NodeExecution> {
              LIMIT #{limit}
             """)
     List<NodeExecution> findRetryWaiting(@Param("now") LocalDateTime now, @Param("limit") int limit);
+
+    /**
+     * The ready nodes that no worker took over.
+     *
+     * <p>A node that is ready and has no worker was never executed. The timestamp is the moment
+     * the node became ready, which is the moment the execution message was written.
+     */
+    @Select("""
+            SELECT * FROM node_execution
+             WHERE status = 'READY'
+               AND (worker_id IS NULL OR worker_id = '')
+               AND updated_at <= #{deadline}
+             ORDER BY updated_at
+             LIMIT #{limit}
+            """)
+    List<NodeExecution> findReadyWithoutWorker(@Param("deadline") LocalDateTime deadline,
+                                                @Param("limit") int limit);
+
+    /**
+     * Extends the lease of a running node without changing the worker.
+     *
+     * <p>The recovery scanner uses it when the agent service reports that the agent is still
+     * working. The node keeps its worker and its fencing token, so the result of the running
+     * attempt is still accepted.
+     */
+    @Update("""
+            UPDATE node_execution
+               SET lease_expire_at = #{leaseExpireAt},
+                   heartbeat_at = CURRENT_TIMESTAMP(3),
+                   updated_at = CURRENT_TIMESTAMP(3)
+             WHERE id = #{id}
+               AND status = 'RUNNING'
+               AND lease_token = #{leaseToken}
+            """)
+    int extendLease(@Param("id") Long id,
+                    @Param("leaseToken") Long leaseToken,
+                    @Param("leaseExpireAt") LocalDateTime leaseExpireAt);
+
+    /**
+     * Claims a ready node for another dispatch.
+     *
+     * <p>The update is conditional on the state of the node, so two scanners cannot dispatch the
+     * same node twice. The timestamp is moved forward, so the node is not picked up again
+     * immediately.
+     */
+    @Update("""
+            UPDATE node_execution
+               SET updated_at = CURRENT_TIMESTAMP(3),
+                   version = version + 1
+             WHERE id = #{id}
+               AND status = 'READY'
+               AND current_attempt = #{expectedAttempt}
+               AND (worker_id IS NULL OR worker_id = '')
+            """)
+    int claimReadyForReschedule(@Param("id") Long id,
+                                 @Param("expectedAttempt") Integer expectedAttempt);
 }

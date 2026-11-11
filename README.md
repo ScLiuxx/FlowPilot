@@ -20,6 +20,7 @@ flowpilot/
 ├── flowpilot-protocol/   跨语言消息协议（JSON Schema，Java 与 Python 共用）
 ├── db/                   数据库脚本
 ├── deploy/               部署配置
+├── ops/                  可观测性与网关配置（Prometheus / Grafana / Nginx / OTel Collector）
 ├── docs/                 接口契约文档
 └── scripts/              本地开发与验证脚本
 ```
@@ -148,7 +149,30 @@ flowpilot-protocol/
 Java 侧的 `ProtocolContractTest` 用这些文件校验自己产生的消息，
 Python 侧在运行时校验收发消息。协议漂移会在测试阶段暴露，而不是在生产环境。
 
-### 8. 安全
+### 8. 基于 OpenTelemetry 的跨服务链路追踪
+
+一次工作流执行的所有步骤都属于**同一条 trace**：
+
+- trace id 在创建执行时生成，存进 `workflow_execution.trace_id`；
+- 每一跳消息都携带 trace id 与生产者的 span id，Java 与 Python 的 span 因此能挂成同一棵树；
+- span 名遵循架构文档的 span 树：`workflow.scheduler`、`node.<节点名>`、`agent.graph`、
+  `llm.call`、`tool.<工具名>`；
+- span 同时落到 `trace_span` 表，采集器不可用时控制台依然能查到完整链路
+  （`GET /api/v1/executions/{executionId}/trace`）。
+
+Prometheus 指标覆盖架构文档要求的全部统计项：工作流/节点/Agent 耗时、
+模型调用次数、Token 消耗、工具调用成功率、节点重试次数、工作流失败率。
+
+### 9. Agent 侧的事务性发件箱与结果重查
+
+Agent 服务的结果事件与执行记录在**同一个事务**里写入 PostgreSQL 的 `agent_outbox`，
+再由后台任务投递到 RabbitMQ，因此结果事件不会丢失。
+
+两套数据库之间没有跨库事务，所以恢复流程会**反查 Agent 的真实状态**：
+Java 的恢复扫描器在重投之前调用 `GET /internal/invocations/{id}/result`，
+拿到 Agent 的 checkpoint 与结果后再决定是采纳结果、延长租约还是重新执行。
+
+### 10. 安全
 
 - JWT 身份认证，密码使用 BCrypt。
 - 用户数据隔离，工作流与执行记录按用户过滤。
@@ -173,12 +197,50 @@ docker compose up -d
 
 | 服务 | 地址 |
 |---|---|
+| 统一入口（Nginx） | http://localhost |
 | 控制台 | http://localhost:5173 |
 | 后端 API | http://localhost:8080 |
 | API 文档 | http://localhost:8080/swagger-ui.html |
 | RabbitMQ 管理台 | http://localhost:15672 (flowpilot / flowpilot) |
+| Prometheus | http://localhost:9090 |
+| Grafana | http://localhost:3000 (admin / flowpilot) |
+| OTLP 接入（gRPC / HTTP） | localhost:4317 / localhost:4318 |
 
 首次启动时 Flyway 会自动创建表结构，并发布一个内置的 **GitHub 技术尽调** 工作流。
+
+### 可观测性与网关
+
+`docker-compose.yml` 除业务服务外，还包含 4 个基础设施容器，配置统一放在 `ops/` 目录下：
+
+| 容器 | 端口 | 作用 | 配置文件 |
+|---|---|---|---|
+| nginx | 80 | 对外统一入口，反代控制台静态资源与 `/api` 后端接口，SSE 路径关闭缓冲 | `ops/nginx/nginx.conf` |
+| prometheus | 9090 | 采集后端 `/actuator/prometheus` 与 otel-collector 的 `/metrics` | `ops/prometheus/prometheus.yml` |
+| grafana | 3000 | 监控大盘，默认数据源指向 prometheus | `ops/grafana/` |
+| otel-collector | 4317 / 4318 / 8889 | 接收 OTLP gRPC 与 HTTP，指标以 prometheus 格式暴露在 8889 | `ops/otel-collector/config.yml` |
+
+- **Nginx**：对外只暴露 80 端口。`/api/` 反代到 `backend-api:8080`，
+  SSE 流（`/api/v1/executions/{id}/events/stream`）使用 `proxy_buffering off` 与
+  `proxy_read_timeout 3600s`，不会被缓冲；其余路径反代到 `frontend:80`。
+- **Prometheus**：抓取间隔 15s，数据保存在 `prometheus-data` 卷，TSDB 目录为 `/prometheus`。
+- **Grafana**：数据源与大盘通过 provisioning 自动加载，大盘为
+  `ops/grafana/dashboards/flowpilot-overview.json`（默认只读挂载，需修改时改宿主目录即可）。
+- **OTel Collector**：trace 走 `debug` 导出器，metrics 走 `prometheus` 导出器，
+  被 Prometheus 以 `otel-collector:8889` 抓取。后端通过环境变量接入，例如：
+
+```bash
+OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4317
+OTEL_EXPORTER_OTLP_PROTOCOL=grpc
+```
+
+Grafana 大盘使用下列指标名，指标由后端自行暴露：
+
+| 指标 | 含义 |
+|---|---|
+| `flowpilot_workflow_duration_seconds` | 工作流执行耗时（Histogram） |
+| `flowpilot_node_duration_seconds` | 节点执行耗时（Histogram） |
+| `flowpilot_llm_calls_total` | LLM 调用次数（Counter） |
+| `flowpilot_tool_calls_total` | 工具调用次数（Counter，带 `outcome` 标签） |
 
 ### 不使用 Docker 的本地开发
 
@@ -205,6 +267,7 @@ cd frontend && npm install && npm run dev
 | `GITHUB_TOKEN` | 提升 GitHub API 速率限制 | 空 |
 | `LLM_API_KEY` | 模型密钥，为空时使用确定性本地模型 | 空 |
 | `MYSQL_HOST` / `REDIS_HOST` / `RABBITMQ_HOST` / `POSTGRES_HOST` | 基础设施地址 | localhost |
+| `GRAFANA_ADMIN_USER` / `GRAFANA_ADMIN_PASSWORD` | Grafana 管理员账号密码 | admin / flowpilot |
 
 ---
 

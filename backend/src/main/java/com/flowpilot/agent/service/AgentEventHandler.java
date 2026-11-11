@@ -3,6 +3,7 @@ package com.flowpilot.agent.service;
 import com.flowpilot.agent.entity.AgentInvocation;
 import com.flowpilot.agent.mapper.AgentInvocationMapper;
 import com.flowpilot.approval.service.ApprovalService;
+import com.flowpilot.common.metrics.FlowPilotMetrics;
 import com.flowpilot.execution.entity.NodeExecution;
 import com.flowpilot.execution.mapper.NodeExecutionMapper;
 import com.flowpilot.execution.model.EventType;
@@ -16,6 +17,7 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.time.Duration;
 import java.time.LocalDateTime;
 import java.util.Map;
 
@@ -35,6 +37,7 @@ public class AgentEventHandler {
     private final NodeResultService nodeResultService;
     private final ApprovalService approvalService;
     private final ExecutionEventService eventService;
+    private final FlowPilotMetrics metrics;
 
     /**
      * The agent finished successfully.
@@ -65,8 +68,19 @@ public class AgentEventHandler {
                     ? 0L : payload.getUsage().getInputTokens());
             invocation.setTokenOutput(payload.getUsage().getOutputTokens() == null
                     ? 0L : payload.getUsage().getOutputTokens());
+            // The number of model and tool calls is reported by the agent service. The
+            // architecture design asks for it, because only the caller knows how many calls
+            // an invocation really needed.
+            invocation.setLlmCallCount(payload.getUsage().getLlmCalls() == null
+                    ? 0 : payload.getUsage().getLlmCalls().intValue());
+            invocation.setToolCallCount(payload.getUsage().getToolCalls() == null
+                    ? 0 : payload.getUsage().getToolCalls().intValue());
+            invocation.setToolFailureCount(payload.getUsage().getToolFailures() == null
+                    ? 0 : payload.getUsage().getToolFailures().intValue());
         }
         invocationMapper.updateById(invocation);
+
+        recordMetrics(invocation, payload.getUsage());
 
         Map<String, Object> output = payload.getResult() == null ? Map.of() : payload.getResult();
         boolean accepted = nodeResultService.complete(node.getId(), invocation.getAttemptNo(),
@@ -197,5 +211,26 @@ public class AgentEventHandler {
         }
         invocation.setCheckpointId(checkpointId);
         invocationMapper.updateById(invocation);
+    }
+
+    /**
+     * Reports the numbers of the invocation to the metrics.
+     *
+     * <p>The architecture design asks for the duration of an agent, the number of model calls,
+     * the token consumption and the success rate of the tool calls.
+     */
+    private void recordMetrics(AgentInvocation invocation, AgentCompletedPayload.Usage usage) {
+        if (invocation.getStartedAt() != null && invocation.getFinishedAt() != null) {
+            long millis = Duration.between(invocation.getStartedAt(), invocation.getFinishedAt()).toMillis();
+            metrics.recordAgentDuration(invocation.getAgentType(), invocation.getStatus(), millis);
+        }
+        if (usage == null) {
+            return;
+        }
+        metrics.countLlmCalls(invocation.getLlmCallCount() == null ? 0 : invocation.getLlmCallCount());
+        metrics.countToolCalls(invocation.getToolCallCount() == null ? 0 : invocation.getToolCallCount(),
+                invocation.getToolFailureCount() == null ? 0 : invocation.getToolFailureCount());
+        metrics.countTokens(invocation.getTokenInput() == null ? 0 : invocation.getTokenInput(),
+                invocation.getTokenOutput() == null ? 0 : invocation.getTokenOutput());
     }
 }

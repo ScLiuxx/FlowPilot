@@ -38,10 +38,14 @@ agent-service/
 │   ├── graphs/
 │   │   ├── research_graph.py    # REPOSITORY_ANALYST
 │   │   ├── analysis_graph.py    # DEPENDENCY_ANALYST
-│   │   └── review_graph.py      # REPORT_REVIEWER (human approval interrupt)
+│   │   ├── review_graph.py      # REPORT_REVIEWER (human approval interrupt)
+│   │   └── llm_graph.py         # LLM (a single model call)
 │   ├── llm/
 │   │   ├── provider.py          # provider abstraction (real / fake)
 │   │   └── fake_model.py        # deterministic offline chat model
+│   ├── telemetry/
+│   │   ├── tracing.py           # tracer provider + global tracer
+│   │   └── trace_context.py     # parent context out of traceId / messageId
 │   ├── tools/
 │   │   ├── github_tool.py       # GitHub REST API (allow list, SSRF defence)
 │   │   ├── dependency_tool.py   # dependency / supply chain risk analysis
@@ -49,11 +53,12 @@ agent-service/
 │   │   └── untrusted.py         # sanitisation of untrusted content
 │   ├── persistence/
 │   │   ├── checkpoint.py        # LangGraph Postgres checkpointer (+ memory saver)
-│   │   ├── repository.py        # durable execution records (Postgres / memory)
+│   │   ├── repository.py        # durable execution records + outbox (Postgres / memory)
 │   │   └── schema.sql           # DDL of the agent tables
 │   └── messaging/
 │       ├── consumer.py          # aio-pika consumer (manual ack, DLQ)
 │       ├── producer.py          # aio-pika producer (publisher confirms)
+│       ├── outbox_publisher.py  # delivers the transactional outbox
 │       └── events.py            # envelope + payload models, schema validation
 ├── tests/
 ├── Dockerfile
@@ -104,12 +109,22 @@ docker run --rm -p 8000:8000 \
 | `RABBITMQ_MAX_REDELIVERIES` | `3` | bounded requeue attempts |
 | `POSTGRES_DSN` | `postgresql://flowpilot:flowpilot@127.0.0.1:5432/flowpilot_agent` | checkpoints + execution records |
 | `PERSISTENCE_ENABLED` | `true` | `false` → in memory store/checkpointer |
+| `PERSISTENCE_REQUIRED` | `true` | `true` → the service refuses to start without PostgreSQL |
 | `MESSAGING_ENABLED` | `true` | `false` → no broker connection |
+| `REDIS_URL` | `redis://localhost:6379/0` | shared idempotency journal; empty → in memory journal |
+| `IDEMPOTENCY_JOURNAL_TTL_SECONDS` | `604800` | TTL of the journal entries (7 days) |
+| `OUTBOX_POLL_INTERVAL_SECONDS` | `1.0` | interval of the outbox publisher |
+| `OUTBOX_BATCH_SIZE` | `20` | rows delivered per outbox cycle |
+| `OUTBOX_MAX_RETRY_SECONDS` | `60` | upper bound of the delivery backoff |
+| `OUTBOX_PUBLISHING_TIMEOUT_SECONDS` | `300` | a row stuck in `PUBLISHING` is reclaimed |
 | `LLM_API_KEY` / `OPENAI_API_KEY` | – | when set the real model is used |
 | `LLM_BASE_URL` / `LLM_MODEL` | `https://api.openai.com/v1` / `gpt-4o-mini` | OpenAI compatible endpoint |
 | `GITHUB_TOKEN` | – | optional; without it the public API is used (low rate limit) |
 | `INTERNAL_API_TOKEN` | – | bearer token for `/internal/**` |
 | `PROTOCOL_SCHEMA_DIR` | auto detected | directory of the shared JSON Schema files |
+| `OTEL_ENABLED` | `true` | `false` → no OpenTelemetry spans |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | – | OTLP gRPC endpoint; empty → the spans stay local |
+| `OTEL_SERVICE_NAME` | `flowpilot-agent-service` | resource of the spans |
 
 ---
 
@@ -137,8 +152,8 @@ incoming and outgoing message with `jsonschema`
 The executor inserts the invocation record *before* it runs the graph
 (`INSERT … ON CONFLICT DO NOTHING`). A redelivered message therefore finds the
 existing record and returns the recorded terminal result instead of starting a
-second run — the recorded `result` / `error` payload is published again, which
-also repairs the case "the agent finished but the event was lost".
+second run — the recorded `result` / `error` payload is written to the outbox
+again, which also repairs the case "the agent finished but the event was lost".
 
 A retry with a **higher `attemptNo`** of a previously failed invocation is not
 a redelivery: it is executed again **on the same thread**.
@@ -175,6 +190,10 @@ and waits. The backend answers with `AgentResume`, the graph is continued with
 > it receives `AgentInterrupted`.
 > `tests/test_interrupt_resume.py` asserts that the effect happened exactly
 > once.
+>
+> The journal is **shared by every replica** of the service: `REDIS_URL`
+> selects the Redis implementation (`SET key value NX EX ttl`, therefore atomic)
+> and an empty value falls back to the in memory journal with a warning.
 
 ### 3.5 Budgets
 
@@ -225,6 +244,10 @@ offline and produce stable output.
   `flowpilot.dead-letter.queue`.
 * Persistent messages, **manual ack** — the ACK is only sent after the business
   work succeeded.
+* The result event is **not** published by the consumer: the execution record
+  and the event are written in **one transaction** to the transactional outbox
+  (`agent_outbox`), the outbox publisher (`app/messaging/outbox_publisher.py`)
+  delivers the rows afterwards. The ACK can therefore never lose a result.
 * Publisher confirms are enabled on the producing channel.
 * Transient failures are requeued with a bounded attempt counter
   (`RABBITMQ_MAX_REDELIVERIES`); everything else is rejected into the dead
@@ -232,13 +255,36 @@ offline and produce stable output.
 * `aio_pika.connect_robust` plus a supervisor loop in `app/main.py` keep the
   consumer alive across broker restarts.
 
+The outbox publisher claims the pending rows with
+`FOR UPDATE SKIP LOCKED`, marks them as `PUBLISHING` and delivers them. A
+failed delivery returns the row to `PENDING` with an exponential backoff
+(`OUTBOX_MAX_RETRY_SECONDS`), a row that stayed in `PUBLISHING` for more than
+`OUTBOX_PUBLISHING_TIMEOUT_SECONDS` is reclaimed. The delivery is *at least
+once*: the backend stays idempotent on the invocation id.
+
 ### 3.9 Observability
 
 Structured JSON logs (one JSON object per line) always carry `traceId`,
 `invocationId`, `threadId` and `messageId`; the identifiers are bound through
 `contextvars` so that they also appear in the LangGraph worker tasks.
-`input_tokens` / `output_tokens` are accumulated in the graph state and
-reported in the `usage` block of `agent.completed`.
+`input_tokens` / `output_tokens` / `llmCalls` / `toolCalls` / `toolFailures`
+are accumulated in the graph state and in the run counters
+(`AgentExecutionContext.counters`) and reported in the `usage` block of
+`agent.completed`.
+
+OpenTelemetry spans join the trace the Java backend opened — the `traceId` of
+the envelope *is* the OpenTelemetry trace id:
+
+| Span | Source |
+|---|---|
+| `agent.graph` | `AgentExecutor._run_graph` |
+| `llm.call` | `ChatModel.ainvoke` (`model`, `inputTokens`, `outputTokens`) |
+| `tool.github_<operation>` | the read only GitHub operations |
+| `tool.dependency_scan` | `analyze_dependencies` |
+
+The spans only carry identifiers, counters and error codes — never a prompt,
+an answer or an API key. `OTEL_EXPORTER_OTLP_ENDPOINT` enables the OTLP gRPC
+exporter; without it the spans stay local.
 
 ---
 
@@ -268,4 +314,11 @@ Coverage of the hard requirements:
 | producer (persistent, confirms, schema) | `tests/test_producer.py` |
 | durable records | `tests/test_repository.py` |
 | HTTP surface | `tests/test_api.py` |
+| transactional outbox | `tests/test_outbox.py` |
+| result of an invocation (recovery) | `tests/test_result_endpoint.py` |
+| startup without PostgreSQL | `tests/test_startup.py` |
+| shared idempotency journal | `tests/test_journal.py` |
+| LLM node type | `tests/test_llm_graph.py` |
+| llm / tool counters | `tests/test_counters.py` |
+| OpenTelemetry spans | `tests/test_telemetry.py` |
 | PostgreSQL tables + checkpointer | `tests/test_postgres_integration.py` |

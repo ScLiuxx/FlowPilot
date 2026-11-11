@@ -1,0 +1,18 @@
+# Grafana dashboard provisioning.
+#
+# Every json file under /var/lib/grafana/dashboards is loaded automatically and updated
+# whenever the file changes on disk.
+
+apiVersion: 1
+
+providers:
+  - name: flowpilot
+    orgId: 1
+    folder: FlowPilot
+    type: file
+    disableDeletion: false
+    allowUiUpdates: true
+    updateIntervalSeconds: 30
+    options:
+      path: /var/lib/grafana/dashboards
+      foldersFromFilesStructure: false

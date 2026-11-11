@@ -44,6 +44,7 @@ registry = AgentGraphRegistry()
 def register_default_graphs(target: AgentGraphRegistry | None = None) -> AgentGraphRegistry:
     """Register the graphs shipped with the service."""
     from app.graphs.analysis_graph import AGENT_TYPE_DEPENDENCY_ANALYST, build_analysis_graph
+    from app.graphs.llm_graph import AGENT_TYPE_LLM, build_llm_graph
     from app.graphs.research_graph import AGENT_TYPE_REPOSITORY_ANALYST, build_research_graph
     from app.graphs.review_graph import AGENT_TYPE_REPORT_REVIEWER, build_review_graph
 
@@ -51,6 +52,7 @@ def register_default_graphs(target: AgentGraphRegistry | None = None) -> AgentGr
     target.register(AGENT_TYPE_REPOSITORY_ANALYST, build_research_graph)
     target.register(AGENT_TYPE_DEPENDENCY_ANALYST, build_analysis_graph)
     target.register(AGENT_TYPE_REPORT_REVIEWER, build_review_graph)
+    target.register(AGENT_TYPE_LLM, build_llm_graph)
     return target
 
 

@@ -3,6 +3,7 @@ package com.flowpilot.agent.service;
 import com.flowpilot.common.exception.BizException;
 import com.flowpilot.common.id.SnowflakeIdGenerator;
 import com.flowpilot.common.result.ErrorCode;
+import com.flowpilot.common.trace.TraceContext;
 import com.flowpilot.common.util.JsonUtils;
 import com.flowpilot.agent.entity.AgentInvocation;
 import com.flowpilot.agent.mapper.AgentInvocationMapper;
@@ -21,6 +22,7 @@ import com.flowpilot.workflow.definition.WorkflowDefinitionDocument;
 import com.flowpilot.workflow.definition.WorkflowNodeDefinition;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -53,6 +55,13 @@ public class AgentInvocationService {
     private final SnowflakeIdGenerator idGenerator;
 
     /**
+     * The longest an agent invocation may run. It is the limit of the platform, so a node cannot
+     * occupy a worker longer than the platform allows.
+     */
+    @Value("${flowpilot.agent.max-execution-seconds:900}")
+    private long maxExecutionSeconds;
+
+    /**
      * Creates the invocation for an agent node and publishes the execute message.
      *
      * <p>The node is put into the running state here, because the agent service owns the
@@ -60,7 +69,7 @@ public class AgentInvocationService {
      */
     @Transactional
     public AgentInvocation dispatch(NodeExecution node, WorkflowNodeDefinition definition,
-                                    Map<String, Object> input, String agentType) {
+                                    Map<String, Object> input, String agentType, String traceId) {
         int attemptNo = (node.getCurrentAttempt() == null ? 0 : node.getCurrentAttempt()) + 1;
 
         // An existing invocation for the same attempt is reused, so a redispatch after a recovery
@@ -115,6 +124,10 @@ public class AgentInvocationService {
         envelope.setNodeExecutionId(node.getId());
         envelope.setAttemptNo(attemptNo);
         envelope.setInvocationId(invocation.getId());
+        // The agent service continues the trace of the execution, so the agent spans and the
+        // node spans end up in the same trace.
+        envelope.setTraceId(traceId == null || traceId.isBlank()
+                ? TraceContext.currentTraceId() : traceId);
         outboxService.enqueue(MessageType.AGENT_EXECUTE, "AGENT", invocation.getId(), envelope);
 
         eventService.append(node.getWorkflowExecutionId(), node.getId(), EventType.AGENT_STARTED,
@@ -216,6 +229,13 @@ public class AgentInvocationService {
         }
         if (definition.getTimeoutPolicy() != null && definition.getTimeoutPolicy().getTimeoutSeconds() != null) {
             config.put("timeoutSeconds", definition.getTimeoutPolicy().getTimeoutSeconds());
+        } else {
+            // Without a timeout of the node the agent service uses its own default. The platform
+            // limit is the smaller of the two, so a node cannot run longer than the platform
+            // allows.
+            config.put("timeoutSeconds", Math.min(maxExecutionSeconds,
+                    config.getOrDefault("timeoutSeconds", maxExecutionSeconds) instanceof Number number
+                            ? number.longValue() : maxExecutionSeconds));
         }
         return config;
     }

@@ -105,6 +105,27 @@
             <version>${json-schema-validator.version}</version>
         </dependency>
 
+        <!-- OpenTelemetry. The platform uses it as the single tracing standard, so the Java
+             service, the message envelope and the Python agent service share one trace.
+             The version is managed by the Spring Boot dependency management. -->
+        <dependency>
+            <groupId>io.opentelemetry</groupId>
+            <artifactId>opentelemetry-api</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>io.opentelemetry</groupId>
+            <artifactId>opentelemetry-sdk</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>io.opentelemetry</groupId>
+            <artifactId>opentelemetry-exporter-otlp</artifactId>
+        </dependency>
+        <!-- Prometheus registry. The actuator already exposes the prometheus endpoint. -->
+        <dependency>
+            <groupId>io.micrometer</groupId>
+            <artifactId>micrometer-registry-prometheus</artifactId>
+        </dependency>
+
         <dependency>
             <groupId>org.springdoc</groupId>
             <artifactId>springdoc-openapi-starter-webmvc-ui</artifactId>

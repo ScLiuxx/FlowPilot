@@ -18,12 +18,14 @@ from typing import Any, Sequence
 
 from app.llm.provider import (
     TASK_DEPENDENCY_ANALYSIS,
+    TASK_LLM_SUMMARY,
     TASK_REPORT_REVIEW,
     TASK_REPOSITORY_ANALYSIS,
     ChatMessage,
     ChatResult,
     estimate_tokens,
 )
+from app.telemetry import get_tracer
 
 _TASK_KEY_RE = re.compile(r"TASK_KEY=([a-z_]+)")
 _REPO_RE = re.compile(r"Repository:\s*([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)")
@@ -41,13 +43,20 @@ class FakeChatModel:
         system = next((m.content for m in messages if m.role == "system"), "")
         user = "\n".join(m.content for m in messages if m.role == "user")
         task = self._task_key(system)
-        payload = self._build_payload(task, user)
-        content = json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True)
-        return ChatResult(
-            content=content,
-            input_tokens=estimate_tokens(system) + estimate_tokens(user),
-            output_tokens=estimate_tokens(content),
-        )
+        tracer = get_tracer()
+        with tracer.start_as_current_span(
+            "llm.call", attributes={"model": self.model_name}
+        ) as span:
+            payload = self._build_payload(task, user)
+            content = json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True)
+            result = ChatResult(
+                content=content,
+                input_tokens=estimate_tokens(system) + estimate_tokens(user),
+                output_tokens=estimate_tokens(content),
+            )
+            span.set_attribute("inputTokens", result.input_tokens)
+            span.set_attribute("outputTokens", result.output_tokens)
+        return result
 
     # -- internals -------------------------------------------------------
     @staticmethod
@@ -81,7 +90,18 @@ class FakeChatModel:
             return self._dependency_payload(facts, digest)
         if task == TASK_REPORT_REVIEW:
             return self._review_payload(facts, digest)
+        if task == TASK_LLM_SUMMARY:
+            return self._summary_payload(facts, digest)
         return self._repository_payload(facts, digest)
+
+    @staticmethod
+    def _summary_payload(facts: dict[str, Any], digest: str) -> dict[str, Any]:
+        return {
+            "summary": (
+                f"The model summarised the request for {facts['repository']} "
+                f"(summary {digest[:8]})."
+            )
+        }
 
     @staticmethod
     def _repository_payload(facts: dict[str, Any], digest: str) -> dict[str, Any]:

@@ -18,10 +18,12 @@ from dataclasses import dataclass, field
 from typing import Any, Callable
 
 from langgraph.types import Command
+from opentelemetry.trace import Status, StatusCode
 
 from app.config.logging import get_logger, log_context
 from app.config.settings import Settings, get_settings
 from app.messaging.events import (
+    ROUTING_BY_MESSAGE_TYPE,
     AgentCancelPayload,
     AgentCompletedPayload,
     AgentExecutePayload,
@@ -34,7 +36,9 @@ from app.messaging.events import (
     MessageEnvelope,
     MessageType,
     TokenUsage,
+    build_outcome_envelope,
     dump_payload,
+    envelope_to_dict,
 )
 from app.persistence.checkpoint import expected_thread_id, latest_checkpoint_id
 from app.persistence.repository import (
@@ -45,6 +49,7 @@ from app.persistence.repository import (
     STATUS_RUNNING,
     STATUS_SUCCEEDED,
     ExecutionRecordStore,
+    OutboxMessage,
 )
 from app.runtime.context import AgentExecutionContext, ExecutionLimits, IdempotencyJournal, default_journal
 from app.runtime.errors import (
@@ -55,6 +60,7 @@ from app.runtime.errors import (
 )
 from app.runtime.registry import AgentGraphRegistry, registry as default_registry
 from app.runtime.state import AgentState
+from app.telemetry import get_tracer, parent_context
 
 logger = get_logger(__name__)
 
@@ -210,19 +216,23 @@ class AgentExecutor:
                     f"unknown agent invocation {payload.invocationId}",
                     error_code="AG-INVOCATION-001",
                 )
-            await self._store.update(payload.invocationId, status=STATUS_CANCELLED)
+            failed = AgentFailedPayload(
+                invocationId=payload.invocationId,
+                threadId=payload.threadId,
+                errorCode="AG-CANCELED-001",
+                errorCategory=ErrorCategory.BUSINESS,
+                errorMessage=payload.cancelReason or "agent invocation canceled",
+                retryable=False,
+            )
             logger.info("agent.cancel applied", extra={"reason": payload.cancelReason})
-            return ExecutionOutcome(
-                status=OUTCOME_CANCELLED,
+            return await self._persist_outcome(
+                envelope,
+                invocation_id=payload.invocationId,
+                status=STATUS_CANCELLED,
+                outcome_status=OUTCOME_CANCELLED,
                 message_type=MessageType.AGENT_FAILED,
-                payload=AgentFailedPayload(
-                    invocationId=payload.invocationId,
-                    threadId=payload.threadId,
-                    errorCode="AG-CANCELED-001",
-                    errorCategory=ErrorCategory.BUSINESS,
-                    errorMessage=payload.cancelReason or "agent invocation canceled",
-                    retryable=False,
-                ).model_dump(mode="json", exclude_none=True),
+                payload=dump_payload(failed),
+                error=dump_payload(failed),
             )
 
     # -- internals --------------------------------------------------------
@@ -256,7 +266,7 @@ class AgentExecutor:
                 and envelope.attemptNo > record.attempt_no
             )
             if not is_retry:
-                duplicate = self._duplicate_outcome(record, envelope)
+                duplicate = await self._duplicate_outcome(record, envelope)
                 if duplicate is not None:
                     logger.info(
                         "agent.execute ignored (already processed)",
@@ -310,9 +320,13 @@ class AgentExecutor:
                     duplicate=True,
                     publish=False,
                 )
-            return ExecutionOutcome(
-                status=resume_record.status,
-                message_type=MessageType(resume_record.payload.get("messageType"))
+            record = await self._store.get(invocation_id)
+            return await self._persist_outcome(
+                envelope,
+                invocation_id=invocation_id,
+                status=record.status if record is not None else STATUS_SUCCEEDED,
+                outcome_status=resume_record.status,
+                message_type=MessageType(resume_record.payload["messageType"])
                 if resume_record.payload.get("messageType")
                 else MessageType.AGENT_COMPLETED,
                 payload=resume_record.payload.get("payload") or {},
@@ -336,7 +350,7 @@ class AgentExecutor:
                     },
                 )
             if record.status == STATUS_SUCCEEDED:
-                duplicate = self._duplicate_outcome(record, envelope)
+                duplicate = await self._duplicate_outcome(record, envelope)
                 if duplicate is not None:
                     await self._store.update_resume(
                         invocation_id,
@@ -411,6 +425,7 @@ class AgentExecutor:
             agent_type=agent_type,
             trace_id=envelope.traceId,
             message_id=envelope.messageId,
+            parent_span_id=envelope.spanId,
             limits=limits,
             input=dict(getattr(payload, "input", {}) or {}),
             llm=self._build_llm(),
@@ -432,20 +447,40 @@ class AgentExecutor:
             checkpointer=self._checkpointer
         )
         config = {"configurable": {"thread_id": thread_id}}
-        try:
-            result = await asyncio.wait_for(
-                graph.ainvoke(graph_input, config, context=context),
-                timeout=context.limits.timeout_seconds,
-            )
-        except asyncio.TimeoutError as exc:
-            raise InvocationTimeoutError(
-                f"agent invocation exceeded the wall clock budget of "
-                f"{context.limits.timeout_seconds}s",
-                diagnostics={
-                    "timeoutSeconds": context.limits.timeout_seconds,
-                    "invocationId": context.invocation_id,
-                },
-            ) from exc
+        tracer = get_tracer()
+        # The span joins the trace the Java backend opened: the trace id of the
+        # envelope *is* the OpenTelemetry trace id.
+        span_context = parent_context(
+            context.trace_id, context.message_id, context.parent_span_id
+        )
+        with tracer.start_as_current_span(
+            "agent.graph",
+            context=span_context,
+            attributes={
+                "flowpilot.invocation_id": context.invocation_id,
+                "flowpilot.agent_type": context.agent_type,
+                "flowpilot.thread_id": context.thread_id,
+            },
+        ) as span:
+            try:
+                result = await asyncio.wait_for(
+                    graph.ainvoke(graph_input, config, context=context),
+                    timeout=context.limits.timeout_seconds,
+                )
+            except asyncio.TimeoutError as exc:
+                span.set_status(Status(StatusCode.ERROR, "timeout"))
+                raise InvocationTimeoutError(
+                    f"agent invocation exceeded the wall clock budget of "
+                    f"{context.limits.timeout_seconds}s",
+                    diagnostics={
+                        "timeoutSeconds": context.limits.timeout_seconds,
+                        "invocationId": context.invocation_id,
+                    },
+                ) from exc
+            except Exception as exc:
+                span.record_exception(exc)
+                span.set_status(Status(StatusCode.ERROR, type(exc).__name__))
+                raise
         return result  # type: ignore[return-value]
 
     async def _finalize(
@@ -461,11 +496,16 @@ class AgentExecutor:
         interrupts = state.get("__interrupt__") if isinstance(state, dict) else None
 
         if interrupts:
-            return await self._interrupt(invocation_id, thread_id, checkpoint_id, interrupts)
+            return await self._interrupt(
+                envelope, invocation_id, thread_id, checkpoint_id, interrupts
+            )
 
         usage = {
             "inputTokens": int(state.get("inputTokens", 0) or 0),
             "outputTokens": int(state.get("outputTokens", 0) or 0),
+            "llmCalls": _counter(state, "llmCalls", context.counters.llm_calls),
+            "toolCalls": _counter(state, "toolCalls", context.counters.tool_calls),
+            "toolFailures": context.counters.tool_failures,
         }
         result_payload = dict(state.get("analysis") or {})
         result_payload["repository"] = state.get("repository")
@@ -482,25 +522,25 @@ class AgentExecutor:
             result=result_payload,
             usage=TokenUsage(**usage),
         )
-        await self._store.update(
-            invocation_id,
-            status=STATUS_SUCCEEDED,
-            checkpoint_id=checkpoint_id,
-            result=dump_payload(completed),
-            usage=usage,
-        )
         logger.info(
             "agent completed",
             extra={"checkpointId": checkpoint_id, **usage},
         )
-        return ExecutionOutcome(
-            status=OUTCOME_COMPLETED,
+        return await self._persist_outcome(
+            envelope,
+            invocation_id=invocation_id,
+            status=STATUS_SUCCEEDED,
+            outcome_status=OUTCOME_COMPLETED,
             message_type=MessageType.AGENT_COMPLETED,
             payload=dump_payload(completed),
+            checkpoint_id=checkpoint_id,
+            result=dump_payload(completed),
+            usage=usage,
         )
 
     async def _interrupt(
         self,
+        envelope: MessageEnvelope,
         invocation_id: int,
         thread_id: str,
         checkpoint_id: str | None,
@@ -522,16 +562,15 @@ class AgentExecutor:
                 payload=value.get("payload") or {},
             ),
         )
-        await self._store.update(
-            invocation_id,
-            status=STATUS_INTERRUPTED,
-            checkpoint_id=checkpoint_id,
-        )
         logger.info("agent interrupted, waiting for human approval", extra={"checkpointId": checkpoint_id})
-        return ExecutionOutcome(
-            status=OUTCOME_INTERRUPTED,
+        return await self._persist_outcome(
+            envelope,
+            invocation_id=invocation_id,
+            status=STATUS_INTERRUPTED,
+            outcome_status=OUTCOME_INTERRUPTED,
             message_type=MessageType.AGENT_INTERRUPTED,
             payload=dump_payload(interrupted),
+            checkpoint_id=checkpoint_id,
         )
 
     async def _fail(
@@ -553,14 +592,6 @@ class AgentExecutor:
             retryable=error_payload.retryable,
             diagnostics=error_payload.diagnostics,
         )
-        try:
-            await self._store.update(
-                invocation_id,
-                status=STATUS_FAILED,
-                error=dump_payload(failed),
-            )
-        except Exception:  # pragma: no cover - the store may be unavailable
-            logger.exception("failed to persist the failed agent state")
         logger.warning(
             "agent failed",
             extra={
@@ -569,14 +600,73 @@ class AgentExecutor:
                 "retryable": error_payload.retryable,
             },
         )
+        try:
+            return await self._persist_outcome(
+                envelope,
+                invocation_id=invocation_id,
+                status=STATUS_FAILED,
+                outcome_status=OUTCOME_FAILED,
+                message_type=MessageType.AGENT_FAILED,
+                payload=dump_payload(failed),
+                error=dump_payload(failed),
+                error_payload=error_payload,
+            )
+        except Exception:
+            # The failure could not be persisted: the command has to be retried,
+            # otherwise the backend would never learn about the failure.
+            logger.exception("failed to persist the failed agent state")
+            raise
+
+    async def _persist_outcome(
+        self,
+        envelope: MessageEnvelope,
+        *,
+        invocation_id: int,
+        status: str,
+        outcome_status: str,
+        message_type: MessageType,
+        payload: dict[str, Any],
+        checkpoint_id: str | None = None,
+        result: dict[str, Any] | None = None,
+        error: dict[str, Any] | None = None,
+        usage: dict[str, Any] | None = None,
+        error_payload: ErrorPayload | None = None,
+        duplicate: bool = False,
+    ) -> ExecutionOutcome:
+        """Persist the outcome and enqueue its event in one transaction.
+
+        The event is not published directly: it is written to the transactional
+        outbox together with the execution record, therefore the result can
+        never be lost when the service dies right after the execution.
+        """
+        event = build_outcome_envelope(envelope, message_type, payload)
+        outbox = OutboxMessage(
+            message_id=event.messageId,
+            message_type=message_type.value,
+            routing_key=ROUTING_BY_MESSAGE_TYPE.get(message_type, message_type.value),
+            payload=envelope_to_dict(event),
+        )
+        await self._store.update_with_outcome(
+            invocation_id,
+            status=status,
+            checkpoint_id=checkpoint_id,
+            result=result,
+            error=error,
+            usage=usage,
+            outbox=outbox,
+        )
         return ExecutionOutcome(
-            status=OUTCOME_FAILED,
-            message_type=MessageType.AGENT_FAILED,
-            payload=dump_payload(failed),
+            status=outcome_status,
+            message_type=message_type,
+            payload=payload,
+            duplicate=duplicate,
+            publish=False,
             error=error_payload,
         )
 
-    def _duplicate_outcome(self, record: Any, envelope: MessageEnvelope) -> ExecutionOutcome | None:
+    async def _duplicate_outcome(
+        self, record: Any, envelope: MessageEnvelope
+    ) -> ExecutionOutcome | None:
         """Build the outcome of a redelivered message (no new run)."""
         if record.status == STATUS_RUNNING:
             # A previous delivery is still running: never start a second run
@@ -596,15 +686,24 @@ class AgentExecutor:
                 publish=False,
             )
         if record.status == STATUS_SUCCEEDED and record.result:
-            return ExecutionOutcome(
+            return await self._persist_outcome(
+                envelope,
+                invocation_id=record.invocation_id,
                 status=record.status,
+                outcome_status=record.status,
                 message_type=MessageType.AGENT_COMPLETED,
                 payload=record.result,
+                checkpoint_id=record.checkpoint_id,
+                result=record.result,
+                usage=record.usage,
                 duplicate=True,
             )
         if record.status == STATUS_INTERRUPTED:
-            return ExecutionOutcome(
+            return await self._persist_outcome(
+                envelope,
+                invocation_id=record.invocation_id,
                 status=record.status,
+                outcome_status=record.status,
                 message_type=MessageType.AGENT_INTERRUPTED,
                 payload=AgentInterruptedPayload(
                     invocationId=record.invocation_id,
@@ -612,13 +711,18 @@ class AgentExecutor:
                     checkpointId=record.checkpoint_id,
                     interruptType="HUMAN_APPROVAL",
                 ).model_dump(mode="json", exclude_none=True),
+                checkpoint_id=record.checkpoint_id,
                 duplicate=True,
             )
         if record.status in (STATUS_FAILED, STATUS_CANCELLED) and record.error:
-            return ExecutionOutcome(
+            return await self._persist_outcome(
+                envelope,
+                invocation_id=record.invocation_id,
                 status=record.status,
+                outcome_status=record.status,
                 message_type=MessageType.AGENT_FAILED,
                 payload=record.error,
+                error=record.error,
                 duplicate=True,
             )
         return None
@@ -631,6 +735,17 @@ def initial_state(payload: AgentExecutePayload) -> AgentState:
         agentType=payload.agentType,
         iterations=0,
         toolCalls=0,
+        llmCalls=0,
         inputTokens=0,
         outputTokens=0,
     )
+
+
+def _counter(state: AgentState, key: str, fallback: int) -> int:
+    """A counter of the checkpointed state, falling back to the run counters.
+
+    The state survives an interrupt / resume cycle, the run counters do not:
+    the state is therefore preferred whenever it carries a value.
+    """
+    value = int(state.get(key, 0) or 0)
+    return value or fallback

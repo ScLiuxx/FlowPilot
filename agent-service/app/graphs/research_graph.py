@@ -70,27 +70,31 @@ async def gather_node(state: AgentState, runtime: Runtime) -> dict[str, Any]:
         # The tool call budget is reserved *before* the call is made, so the
         # agent never performs more calls than allowed.
         tool_calls = context.consume_tool_call(tool_calls)
-        repository_info = await github.get_repository(repository)
+        repository_info = await context.call_tool(
+            lambda: github.get_repository(repository)
+        )
         facts["repository"] = repository_info
 
         tool_calls = context.consume_tool_call(tool_calls)
-        commits = await github.list_commits(repository)
+        commits = await context.call_tool(lambda: github.list_commits(repository))
         facts["commits"] = commits
 
         tool_calls = context.consume_tool_call(tool_calls)
-        issues = await github.list_issues(repository)
+        issues = await context.call_tool(lambda: github.list_issues(repository))
         facts["issues"] = issues
 
         tool_calls = context.consume_tool_call(tool_calls)
-        pull_requests = await github.list_pull_requests(repository)
+        pull_requests = await context.call_tool(
+            lambda: github.list_pull_requests(repository)
+        )
         facts["pullRequests"] = pull_requests
 
         tool_calls = context.consume_tool_call(tool_calls)
-        releases = await github.list_releases(repository)
+        releases = await context.call_tool(lambda: github.list_releases(repository))
         facts["releases"] = releases
 
         tool_calls = context.consume_tool_call(tool_calls)
-        readme = await github.get_readme(repository)
+        readme = await context.call_tool(lambda: github.get_readme(repository))
         facts["readme"] = readme
 
     if repository is None and not facts:
@@ -152,6 +156,7 @@ async def analyze_node(state: AgentState, runtime: Runtime) -> dict[str, Any]:
     )
     result = await context.llm.ainvoke(messages)
     analysis = result.as_json()
+    context.counters.record_llm_call()
 
     input_tokens = int(state.get("inputTokens", 0)) + result.input_tokens
     output_tokens = int(state.get("outputTokens", 0)) + result.output_tokens
@@ -160,6 +165,7 @@ async def analyze_node(state: AgentState, runtime: Runtime) -> dict[str, Any]:
     return {
         "analysis": analysis,
         "iterations": iterations,
+        "llmCalls": int(state.get("llmCalls", 0)) + 1,
         "inputTokens": input_tokens,
         "outputTokens": output_tokens,
     }
@@ -186,7 +192,7 @@ async def review_node(state: AgentState, runtime: Runtime) -> dict[str, Any]:
     # `_review_id` is a pure function of the invocation id and the analysis, and
     # the side effect is registered in the keyed journal, so the second
     # execution observes the key and does not repeat the effect.
-    context.journal.record_once(
+    await context.journal.record_once(
         f"approval-request:{review_id}",
         {"invocationId": context.invocation_id, "reviewId": review_id},
     )

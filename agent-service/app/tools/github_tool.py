@@ -23,7 +23,9 @@ from __future__ import annotations
 
 import base64
 import re
-from typing import Any
+from typing import Any, Awaitable, Callable
+
+from opentelemetry.trace import Status, StatusCode
 
 from app.runtime.errors import (
     PermissionError_,
@@ -31,6 +33,7 @@ from app.runtime.errors import (
     TransientError,
     ValidationError,
 )
+from app.telemetry import get_tracer
 from app.tools.untrusted import sanitize_untrusted
 
 #: Fixed API base URL. Never configurable, never derived from user input.
@@ -212,10 +215,37 @@ class GitHubTool:
             ) from exc
 
     # -- allow listed operations -----------------------------------------
+    async def _operation(
+        self,
+        name: str,
+        repository: str,
+        call: Callable[[], Awaitable[Any]],
+    ) -> Any:
+        """Run one allow listed operation inside its own span."""
+        tracer = get_tracer()
+        with tracer.start_as_current_span(
+            f"tool.github_{name}", attributes={"repository": repository}
+        ) as span:
+            try:
+                return await call()
+            except Exception as exc:
+                span.record_exception(exc)
+                span.set_status(
+                    Status(
+                        StatusCode.ERROR,
+                        getattr(exc, "error_code", None) or type(exc).__name__,
+                    )
+                )
+                raise
+
     async def get_repository(self, ref: str) -> dict[str, Any]:
         """Public metadata of the repository."""
         owner_repo = normalize_repository_ref(ref)
-        data = await self._request(f"/repos/{owner_repo}")
+        data = await self._operation(
+            "get_repository",
+            owner_repo,
+            lambda: self._request(f"/repos/{owner_repo}"),
+        )
         if not isinstance(data, dict):
             raise TransientError(
                 "GitHub API returned an unexpected payload",
@@ -242,9 +272,13 @@ class GitHubTool:
 
     async def list_commits(self, ref: str, per_page: int = 10) -> list[dict[str, Any]]:
         owner_repo = normalize_repository_ref(ref)
-        data = await self._request(
-            f"/repos/{owner_repo}/commits",
-            params={"per_page": self._limit(per_page)},
+        data = await self._operation(
+            "list_commits",
+            owner_repo,
+            lambda: self._request(
+                f"/repos/{owner_repo}/commits",
+                params={"per_page": self._limit(per_page)},
+            ),
         )
         if not isinstance(data, list):
             return []
@@ -266,9 +300,13 @@ class GitHubTool:
 
     async def list_issues(self, ref: str, state: str = "open", per_page: int = 10) -> list[dict[str, Any]]:
         owner_repo = normalize_repository_ref(ref)
-        data = await self._request(
-            f"/repos/{owner_repo}/issues",
-            params={"state": state, "per_page": self._limit(per_page)},
+        data = await self._operation(
+            "list_issues",
+            owner_repo,
+            lambda: self._request(
+                f"/repos/{owner_repo}/issues",
+                params={"state": state, "per_page": self._limit(per_page)},
+            ),
         )
         if not isinstance(data, list):
             return []
@@ -291,9 +329,13 @@ class GitHubTool:
 
     async def list_pull_requests(self, ref: str, state: str = "open", per_page: int = 10) -> list[dict[str, Any]]:
         owner_repo = normalize_repository_ref(ref)
-        data = await self._request(
-            f"/repos/{owner_repo}/pulls",
-            params={"state": state, "per_page": self._limit(per_page)},
+        data = await self._operation(
+            "list_pull_requests",
+            owner_repo,
+            lambda: self._request(
+                f"/repos/{owner_repo}/pulls",
+                params={"state": state, "per_page": self._limit(per_page)},
+            ),
         )
         if not isinstance(data, list):
             return []
@@ -313,9 +355,13 @@ class GitHubTool:
 
     async def list_releases(self, ref: str, per_page: int = 5) -> list[dict[str, Any]]:
         owner_repo = normalize_repository_ref(ref)
-        data = await self._request(
-            f"/repos/{owner_repo}/releases",
-            params={"per_page": self._limit(per_page)},
+        data = await self._operation(
+            "list_releases",
+            owner_repo,
+            lambda: self._request(
+                f"/repos/{owner_repo}/releases",
+                params={"per_page": self._limit(per_page)},
+            ),
         )
         if not isinstance(data, list):
             return []
@@ -335,7 +381,11 @@ class GitHubTool:
         """Raw README text (already sanitised and truncated)."""
         owner_repo = normalize_repository_ref(ref)
         try:
-            data = await self._request(f"/repos/{owner_repo}/readme")
+            data = await self._operation(
+                "get_readme",
+                owner_repo,
+                lambda: self._request(f"/repos/{owner_repo}/readme"),
+            )
         except ValidationError as exc:
             if exc.error_code == "GITHUB_REPO_NOT_FOUND":
                 return ""

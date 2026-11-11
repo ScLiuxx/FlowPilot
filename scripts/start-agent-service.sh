@@ -24,6 +24,7 @@ cd "$AGENT_DIR" || exit 1
 setsid nohup env \
   RABBITMQ_URL="amqp://flowpilot:flowpilot@127.0.0.1:5672/" \
   POSTGRES_DSN="postgresql://flowpilot:flowpilot@127.0.0.1:5432/flowpilot_agent" \
+  REDIS_URL="${REDIS_URL:-redis://127.0.0.1:6379/0}" \
   GITHUB_TOKEN="${GITHUB_TOKEN:-}" \
   HTTP_PROXY="${HTTP_PROXY:-}" \
   HTTPS_PROXY="${HTTPS_PROXY:-}" \

@@ -1,6 +1,8 @@
 package com.flowpilot.execution.scheduler;
 
+import com.flowpilot.common.metrics.FlowPilotMetrics;
 import com.flowpilot.common.trace.TraceContext;
+import com.flowpilot.common.trace.TracingService;
 import com.flowpilot.common.util.JsonUtils;
 import com.flowpilot.common.util.SafeUrlValidator;
 import com.flowpilot.execution.entity.NodeExecution;
@@ -26,6 +28,7 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.time.Duration;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.List;
@@ -54,6 +57,8 @@ public class WorkflowScheduler {
     private final ExecutionEventService eventService;
     private final OutboxService outboxService;
     private final AgentNodeDispatcher agentNodeDispatcher;
+    private final TracingService tracingService;
+    private final FlowPilotMetrics metrics;
 
     /** The number of nodes one workflow may run at the same time. */
     @org.springframework.beans.factory.annotation.Value("${flowpilot.worker.max-concurrency:8}")
@@ -69,8 +74,13 @@ public class WorkflowScheduler {
             log.info("ignoring start message for terminal execution {}", executionId);
             return;
         }
-        executionService.markRunning(executionId);
-        scheduleInitialNodes(executionId);
+        try (TracingService.TracedSpan span = tracingService.start("workflow.scheduler",
+                execution.getTraceId(), "", executionId, null,
+                Map.of("phase", "start"))) {
+            span.makeCurrent();
+            executionService.markRunning(executionId);
+            scheduleInitialNodes(executionId);
+        }
     }
 
     /**
@@ -103,24 +113,29 @@ public class WorkflowScheduler {
         if (WorkflowStatus.valueOf(execution.getStatus()).isTerminal()) {
             return;
         }
-        WorkflowDefinitionDocument document = loadDocument(execution);
-        applyBranchSelection(executionId, document, nodeKey);
-        List<String> successors = dependencyResolver.successors(document, nodeKey);
-        for (String successorKey : successors) {
-            NodeExecution successor = nodeExecutionMapper.findByExecutionAndKey(executionId, successorKey);
-            if (successor == null || !NodeStatus.PENDING.name().equals(successor.getStatus())) {
-                continue;
+        try (TracingService.TracedSpan span = tracingService.start("workflow.scheduler",
+                execution.getTraceId(), "", executionId, null,
+                Map.of("phase", "schedule", "nodeKey", nodeKey))) {
+            span.makeCurrent();
+            WorkflowDefinitionDocument document = loadDocument(execution);
+            applyBranchSelection(executionId, document, nodeKey);
+            List<String> successors = dependencyResolver.successors(document, nodeKey);
+            for (String successorKey : successors) {
+                NodeExecution successor = nodeExecutionMapper.findByExecutionAndKey(executionId, successorKey);
+                if (successor == null || !NodeStatus.PENDING.name().equals(successor.getStatus())) {
+                    continue;
+                }
+                WorkflowNodeDefinition definition = dependencyResolver.findNode(document, successorKey);
+                if (definition == null) {
+                    continue;
+                }
+                if (!dependencyResolver.canExecute(successor, document)) {
+                    continue;
+                }
+                dispatch(successor, definition, document, execution);
             }
-            WorkflowNodeDefinition definition = dependencyResolver.findNode(document, successorKey);
-            if (definition == null) {
-                continue;
-            }
-            if (!dependencyResolver.canExecute(successor, document)) {
-                continue;
-            }
-            dispatch(successor, definition, document, execution);
+            checkCompletion(executionId);
         }
-        checkCompletion(executionId);
     }
 
     /**
@@ -259,7 +274,7 @@ public class WorkflowScheduler {
         if (nodeType.isAgentBacked()) {
             // Agent nodes are executed by the Python service. The scheduler dispatches them
             // asynchronously and the node stays in the running state until the agent reports back.
-            agentNodeDispatcher.dispatch(node, definition);
+            agentNodeDispatcher.dispatch(node, definition, execution.getTraceId());
             return;
         }
 
@@ -276,7 +291,9 @@ public class WorkflowScheduler {
         envelope.setWorkflowExecutionId(node.getWorkflowExecutionId());
         envelope.setNodeExecutionId(node.getId());
         envelope.setAttemptNo(node.getCurrentAttempt() == null ? 1 : node.getCurrentAttempt() + 1);
-        envelope.setTraceId(TraceContext.currentTraceId());
+        // The message carries the trace of the execution, so the worker continues the same trace.
+        envelope.setTraceId(execution.getTraceId() == null || execution.getTraceId().isBlank()
+                ? TraceContext.currentTraceId() : execution.getTraceId());
         outboxService.enqueue(MessageType.NODE_EXECUTE, "NODE", node.getId(), envelope);
     }
 
@@ -347,8 +364,36 @@ public class WorkflowScheduler {
             return;
         }
         node.setStatus(NodeStatus.READY.name());
-        agentNodeDispatcher.dispatch(node, definition);
+        agentNodeDispatcher.dispatch(node, definition, execution.getTraceId());
         log.info("agent node {} redispatched after a lease recovery", node.getNodeKey());
+    }
+
+    /**
+     * Schedules a node that is ready again.
+     *
+     * <p>The node keeps its state and its attempt number. Only the execution message is written
+     * again, so a node that was actually executed is not executed twice: the lease of the first
+     * worker rejects the second attempt.
+     */
+    @Transactional
+    public void scheduleReady(NodeExecution node) {
+        WorkflowExecution execution = executionService.get(node.getWorkflowExecutionId());
+        if (WorkflowStatus.valueOf(execution.getStatus()).isTerminal()) {
+            return;
+        }
+        WorkflowDefinitionDocument document = loadDocument(execution);
+        WorkflowNodeDefinition definition = dependencyResolver.findNode(document, node.getNodeKey());
+        if (definition == null) {
+            log.warn("cannot reschedule node {}, the definition is gone", node.getNodeKey());
+            return;
+        }
+        int expectedAttempt = node.getCurrentAttempt() == null ? 0 : node.getCurrentAttempt();
+        int claimed = nodeExecutionMapper.claimReadyForReschedule(node.getId(), expectedAttempt);
+        if (claimed != 1) {
+            // Another scanner or a worker got the node first.
+            return;
+        }
+        publishNodeExecute(node, definition, execution, buildNodeInput(execution, definition));
     }
 
     /**
@@ -433,6 +478,7 @@ public class WorkflowScheduler {
                 .build());
         eventService.append(execution.getId(), null, EventType.WORKFLOW_SUCCEEDED,
                 Map.of("totalNodes", nodes.size()), null);
+        recordWorkflowMetrics(execution, WorkflowStatus.SUCCEEDED.name());
         log.info("workflow execution succeeded executionId={}", execution.getId());
     }
 
@@ -472,7 +518,20 @@ public class WorkflowScheduler {
                 .build());
         eventService.append(execution.getId(), null, EventType.WORKFLOW_FAILED,
                 Map.of("failedNodes", failed, "cancelledNodes", cancelled), null);
+        recordWorkflowMetrics(execution, WorkflowStatus.FAILED.name());
+        metrics.countWorkflowFailure();
         log.info("workflow execution failed executionId={} failedNodes={}", execution.getId(), failed);
+    }
+
+    /**
+     * Reports the duration of a finished workflow.
+     */
+    private void recordWorkflowMetrics(WorkflowExecution execution, String status) {
+        if (execution.getStartedAt() == null) {
+            return;
+        }
+        long millis = Duration.between(execution.getStartedAt(), LocalDateTime.now()).toMillis();
+        metrics.recordWorkflowDuration(status, millis);
     }
 
     private WorkflowDefinitionDocument loadDocument(WorkflowExecution execution) {

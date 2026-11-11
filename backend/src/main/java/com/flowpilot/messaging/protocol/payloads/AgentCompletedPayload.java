@@ -29,5 +29,11 @@ public class AgentCompletedPayload {
     public static class Usage {
         private Long inputTokens;
         private Long outputTokens;
+        /** The number of model calls the invocation needed. */
+        private Long llmCalls;
+        /** The number of tool calls the invocation needed. */
+        private Long toolCalls;
+        /** The number of tool calls that failed. */
+        private Long toolFailures;
     }
 }

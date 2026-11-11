@@ -34,6 +34,13 @@ public class MessageEnvelope<T> {
     private Integer attemptNo;
     private Long invocationId;
     private String traceId;
+    /**
+     * The span of the producer.
+     *
+     * <p>The consumer continues the trace as the child of this span, so the whole chain of one
+     * execution ends up in a single trace.
+     */
+    private String spanId;
     private Instant timestamp;
     private String producer;
     private T payload;
@@ -45,6 +52,7 @@ public class MessageEnvelope<T> {
                 .messageType(type.wireName())
                 .correlationId(com.flowpilot.common.trace.TraceContext.newCorrelationId())
                 .traceId(com.flowpilot.common.trace.TraceContext.currentTraceId())
+                .spanId(com.flowpilot.common.trace.TraceContext.currentSpanId())
                 .timestamp(Instant.now())
                 .producer("flowpilot-backend")
                 .payload(payload)

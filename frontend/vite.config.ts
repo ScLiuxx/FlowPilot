@@ -453,6 +453,61 @@ function mockBackend(): Plugin {
           return
         }
 
+        // ---- 执行链路追踪 ----
+        if (method === 'GET' && path === '/api/v1/executions/10001/trace') {
+          send(200, {
+            executionId: '10001',
+            traceId: '4bf92f3577b34da6a3ce929d0e0e4736',
+            spans: [
+              {
+                traceId: '4bf92f3577b34da6a3ce929d0e0e4736',
+                spanId: 'a1b2c3d4e5f60718',
+                parentSpanId: null,
+                spanName: 'workflow.scheduler',
+                nodeExecutionId: '10001',
+                durationMs: 12,
+                status: 'OK',
+                attributes: { phase: 'start', workflowId: 100 },
+                startedAt: '2026-11-11T09:29:58.000'
+              },
+              {
+                traceId: '4bf92f3577b34da6a3ce929d0e0e4736',
+                spanId: 'b2c3d4e5f6071829',
+                parentSpanId: 'a1b2c3d4e5f60718',
+                spanName: 'node.collect_repository',
+                nodeExecutionId: '20001',
+                durationMs: 812,
+                status: 'OK',
+                attributes: { attempt: 1, nodeType: 'HTTP' },
+                startedAt: '2026-11-11T09:30:02.000'
+              },
+              {
+                traceId: '4bf92f3577b34da6a3ce929d0e0e4736',
+                spanId: 'c3d4e5f607182930',
+                parentSpanId: 'b2c3d4e5f6071829',
+                spanName: 'http.request',
+                nodeExecutionId: '20001',
+                durationMs: null,
+                status: 'ERROR',
+                attributes: { url: 'https://api.github.com/repos/example/project' },
+                startedAt: '2026-11-11T09:30:02.500'
+              },
+              {
+                traceId: '4bf92f3577b34da6a3ce929d0e0e4736',
+                spanId: 'd4e5f60718293041',
+                parentSpanId: 'ffffffffffffffff',
+                spanName: 'node.analyze_repository',
+                nodeExecutionId: '20002',
+                durationMs: 30000,
+                status: 'ERROR',
+                attributes: { attempt: 2, errorCode: 'GITHUB_API_TIMEOUT' },
+                startedAt: '2026-11-11T09:30:05.000'
+              }
+            ]
+          })
+          return
+        }
+
         // ---- approvals ----
         if (method === 'GET' && path === '/api/v1/approvals') {
           send(200, {

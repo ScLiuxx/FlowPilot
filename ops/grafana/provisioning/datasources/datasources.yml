@@ -1,0 +1,17 @@
+# Grafana datasource provisioning.
+#
+# The dashboards in /var/lib/grafana/dashboards reference this datasource through the
+# ${DS_PROMETHEUS} placeholder, so the name must stay "Prometheus".
+
+apiVersion: 1
+
+datasources:
+  - name: Prometheus
+    type: prometheus
+    access: proxy
+    url: http://prometheus:9090
+    uid: prometheus
+    isDefault: true
+    editable: true
+    jsonData:
+      timeInterval: 15s

@@ -76,6 +76,9 @@ public class ApprovalController {
                 ? null : approval.getRequestedAt().toString());
         response.put("decidedAt", approval.getDecidedAt() == null
                 ? null : approval.getDecidedAt().toString());
+        response.put("expireAt", approval.getExpireAt() == null
+                ? null : approval.getExpireAt().toString());
+        response.put("timeoutAction", approval.getTimeoutAction());
         response.put("approverId", Ids.of(approval.getApproverId()));
         response.put("comment", approval.getComment());
         return response;

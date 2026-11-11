@@ -17,8 +17,12 @@ dependencies = [
     "jsonschema>=4.23",
     "langgraph>=0.2.50",
     "langgraph-checkpoint-postgres>=2.0.0",
+    "opentelemetry-sdk>=1.28",
+    "opentelemetry-exporter-otlp-proto-grpc>=1.28",
+    "opentelemetry-instrumentation-fastapi>=0.49b0",
     "psycopg[binary]>=3.2",
     "psycopg-pool>=3.2",
+    "redis>=5.0",
 ]
 
 [project.optional-dependencies]

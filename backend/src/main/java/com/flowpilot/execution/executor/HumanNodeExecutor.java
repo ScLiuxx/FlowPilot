@@ -30,6 +30,16 @@ public class HumanNodeExecutor implements NodeExecutor {
         output.put("title", String.valueOf(config.getOrDefault("title", "请确认执行结果")));
         output.put("description", String.valueOf(config.getOrDefault("description", "")));
         output.put("awaitingDecision", true);
+        // The deadline of the approval travels with the request, so the approval service can
+        // close the approval when nobody answers it.
+        Object timeoutMinutes = config.get("timeoutMinutes");
+        if (timeoutMinutes != null) {
+            output.put("timeoutMinutes", timeoutMinutes);
+        }
+        Object timeoutAction = config.get("timeoutAction");
+        if (timeoutAction != null) {
+            output.put("timeoutAction", timeoutAction);
+        }
         return NodeResult.success(output);
     }
 }

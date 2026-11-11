@@ -52,6 +52,13 @@ public class AgentInvocation {
     private Long tokenInput;
     private Long tokenOutput;
 
+    /** The number of model calls the invocation needed. */
+    private Integer llmCallCount;
+    /** The number of tool calls the invocation needed. */
+    private Integer toolCallCount;
+    /** The number of tool calls that failed. */
+    private Integer toolFailureCount;
+
     private String errorCode;
     private String errorMessage;
 

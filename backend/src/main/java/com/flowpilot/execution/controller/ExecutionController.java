@@ -7,6 +7,7 @@ import com.flowpilot.common.result.ErrorCode;
 import com.flowpilot.common.result.PageResult;
 import com.flowpilot.common.result.Result;
 import com.flowpilot.common.security.CurrentUser;
+import com.flowpilot.common.trace.mapper.TraceSpanMapper;
 import com.flowpilot.common.util.Ids;
 import com.flowpilot.common.util.JsonUtils;
 import com.flowpilot.execution.dto.ExecutionDtos;
@@ -43,6 +44,7 @@ import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 
 import java.time.Duration;
 import java.time.LocalDateTime;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -62,6 +64,7 @@ public class ExecutionController {
     private final ApprovalService approvalService;
     private final AgentInvocationService agentInvocationService;
     private final ReportService reportService;
+    private final TraceSpanMapper traceSpanMapper;
 
     /**
      * Starts a workflow execution. The call returns as soon as the execution is created.
@@ -170,6 +173,39 @@ public class ExecutionController {
             afterSequence = lastEventIdParam;
         }
         return sseBroadcaster.subscribe(executionId, afterSequence);
+    }
+
+    /**
+     * The trace of an execution.
+     *
+     * <p>The spans are the nodes of the execution chain, so the console can show how long every
+     * step took and where the chain was interrupted.
+     */
+    @GetMapping("/executions/{executionId}/trace")
+    public Result<Map<String, Object>> trace(@PathVariable Long executionId) {
+        WorkflowExecution execution = executionService.requireAccessible(executionId,
+                CurrentUser.requireId(), CurrentUser.isAdmin());
+        List<Map<String, Object>> spans = traceSpanMapper.findByWorkflowExecutionId(executionId)
+                .stream()
+                .map(span -> {
+                    Map<String, Object> item = new LinkedHashMap<>();
+                    item.put("traceId", span.getTraceId());
+                    item.put("spanId", span.getSpanId());
+                    item.put("parentSpanId", span.getParentSpanId());
+                    item.put("spanName", span.getSpanName());
+                    item.put("nodeExecutionId", Ids.of(span.getNodeExecutionId()));
+                    item.put("durationMs", span.getDurationMs());
+                    item.put("status", span.getStatus());
+                    item.put("attributes", JsonUtils.toMap(span.getAttributes()));
+                    item.put("startedAt", span.getStartedAt() == null
+                            ? null : span.getStartedAt().toString());
+                    return item;
+                })
+                .toList();
+        return Result.success(Map.of(
+                "executionId", Ids.of(executionId),
+                "traceId", execution.getTraceId() == null ? "" : execution.getTraceId(),
+                "spans", spans));
     }
 
     /**

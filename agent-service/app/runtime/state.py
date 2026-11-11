@@ -34,5 +34,6 @@ class AgentState(TypedDict, total=False):
     # --- budget counters ----------------------------------------------------
     iterations: int
     toolCalls: int
+    llmCalls: int
     inputTokens: int
     outputTokens: int

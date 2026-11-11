@@ -49,8 +49,10 @@ async def gather_node(state: AgentState, runtime: Runtime) -> dict[str, Any]:
 
     tool_calls = int(state.get("toolCalls", 0))
     tool_calls = context.consume_tool_call(tool_calls)
-    dependency_report = analyze_dependencies(
-        {str(name): str(content) for name, content in manifests.items()}
+    dependency_report = await context.call_tool(
+        lambda: analyze_dependencies(
+            {str(name): str(content) for name, content in manifests.items()}
+        )
     )
 
     repository = str(payload.get("repository") or payload.get("repositoryUrl") or "unknown/unknown")
@@ -84,6 +86,7 @@ async def analyze_node(state: AgentState, runtime: Runtime) -> dict[str, Any]:
     messages = build_messages(TASK_DEPENDENCY_ANALYSIS, _ANALYSIS_INSTRUCTIONS, content)
     result = await context.llm.ainvoke(messages)
     analysis = result.as_json()
+    context.counters.record_llm_call()
 
     input_tokens = int(state.get("inputTokens", 0)) + result.input_tokens
     output_tokens = int(state.get("outputTokens", 0)) + result.output_tokens
@@ -92,6 +95,7 @@ async def analyze_node(state: AgentState, runtime: Runtime) -> dict[str, Any]:
     return {
         "analysis": analysis,
         "iterations": iterations,
+        "llmCalls": int(state.get("llmCalls", 0)) + 1,
         "inputTokens": input_tokens,
         "outputTokens": output_tokens,
     }

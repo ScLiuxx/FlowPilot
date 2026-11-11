@@ -92,6 +92,13 @@ public final class WorkflowValidator {
             }
         }
 
+        // The structure checks only make sense once the graph itself is valid.
+        if (errors.isEmpty()) {
+            validateIsolatedNodes(nodeMap, errors);
+            validateBranches(nodeMap, errors);
+            validateInputOutputMapping(nodeMap, errors);
+        }
+
         if (!errors.isEmpty()) {
             return new ValidationResult(false, topologicalOrder, errors, warnings);
         }
@@ -195,6 +202,95 @@ public final class WorkflowValidator {
             }
             default -> {
                 // LLM and MERGE need no mandatory configuration.
+            }
+        }
+
+        // The schema of the type catches the mistakes the switch above cannot, for example a
+        // key that the type does not understand.
+        for (String problem : NodeSchemaRegistry.validateConfig(type, config)) {
+            errors.add("Node " + node.getId() + " has an invalid configuration: " + problem);
+        }
+    }
+
+    /**
+     * Checks that no node is isolated.
+     *
+     * <p>A node is isolated when it has no dependency and no successor. Such a node runs on its
+     * own and its result never reaches anything, which is almost always a mistake in the
+     * definition.
+     */
+    private static void validateIsolatedNodes(Map<String, WorkflowNodeDefinition> nodeMap,
+                                              List<String> errors) {
+        if (nodeMap.size() < 2) {
+            // A workflow with a single node is not isolated, it is the whole workflow.
+            return;
+        }
+        Set<String> referenced = new HashSet<>();
+        for (WorkflowNodeDefinition node : nodeMap.values()) {
+            referenced.addAll(node.dependencies());
+        }
+        for (WorkflowNodeDefinition node : nodeMap.values()) {
+            if (node.dependencies().isEmpty() && !referenced.contains(node.getId())) {
+                errors.add("Node " + node.getId() + " is isolated, it neither depends on a node "
+                        + "nor is a dependency of another node");
+            }
+        }
+    }
+
+    /**
+     * Checks that the branches of a condition point at real nodes.
+     *
+     * <p>A branch that names an unknown node never runs, so the workflow would wait for a node
+     * that does not exist.
+     */
+    private static void validateBranches(Map<String, WorkflowNodeDefinition> nodeMap,
+                                         List<String> errors) {
+        for (WorkflowNodeDefinition node : nodeMap.values()) {
+            if (!NodeType.CONDITION.name().equalsIgnoreCase(node.getType())) {
+                continue;
+            }
+            Object branches = node.config().get("branches");
+            if (!(branches instanceof Map<?, ?> map)) {
+                continue;
+            }
+            map.forEach((branch, targets) -> {
+                if (!(targets instanceof Iterable<?> iterable)) {
+                    errors.add("The branch " + branch + " of the condition node " + node.getId()
+                            + " must be a list of node keys");
+                    return;
+                }
+                iterable.forEach(target -> {
+                    String key = String.valueOf(target);
+                    if (!nodeMap.containsKey(key)) {
+                        errors.add("The branch " + branch + " of the condition node " + node.getId()
+                                + " names an unknown node: " + key);
+                    }
+                });
+            });
+        }
+    }
+
+    /**
+     * Checks that the output of a node still fits the input of its successor.
+     *
+     * <p>The check only applies to the nodes that declare a schema. A node without a schema
+     * passes anything, so the check is skipped for it.
+     */
+    private static void validateInputOutputMapping(Map<String, WorkflowNodeDefinition> nodeMap,
+                                                   List<String> errors) {
+        for (WorkflowNodeDefinition consumer : nodeMap.values()) {
+            var consumerInput = NodeSchemaRegistry.inputSchema(consumer.config());
+            if (consumerInput == null) {
+                continue;
+            }
+            for (String dependency : consumer.dependencies()) {
+                WorkflowNodeDefinition producer = nodeMap.get(dependency);
+                if (producer == null) {
+                    continue;
+                }
+                var producerOutput = NodeSchemaRegistry.outputSchema(producer.config());
+                errors.addAll(NodeSchemaRegistry.checkMapping(producer.getId(), producerOutput,
+                        consumer.getId(), consumerInput));
             }
         }
     }

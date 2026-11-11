@@ -29,6 +29,7 @@ import type {
   PageResult,
   RegisterRequest,
   Report,
+  TraceResponse,
   Workflow,
   WorkflowCreateRequest,
   WorkflowDefinition,
@@ -231,6 +232,19 @@ export const executionApi = {
       method: 'POST',
       data: payload
     })
+}
+
+/**
+ * 拉取一次执行的链路追踪（OpenTelemetry span 列表）。
+ *
+ * 后端尚未记录 span 时返回空数组；失败时不弹 toast，改由页面用错误提示条呈现。
+ */
+export function getExecutionTrace(executionId: Id): Promise<TraceResponse> {
+  return request<TraceResponse>({
+    url: `/executions/${executionId}/trace`,
+    method: 'GET',
+    silent: true
+  })
 }
 
 /* ---------------------------------------------------------------------- *

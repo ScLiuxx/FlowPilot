@@ -11,6 +11,7 @@ from __future__ import annotations
 import re
 from typing import Any
 
+from app.telemetry import get_tracer
 from app.tools.untrusted import sanitize_untrusted
 
 _REQUIREMENT_RE = re.compile(
@@ -65,6 +66,17 @@ def analyze_dependencies(manifests: dict[str, str]) -> dict[str, Any]:
     ``manifests`` maps a file name (``requirements.txt``, ``package.json`` …)
     to its raw content.
     """
+    tracer = get_tracer()
+    with tracer.start_as_current_span(
+        "tool.dependency_scan", attributes={"manifests": len(manifests or {})}
+    ) as span:
+        report = _analyze(manifests)
+        span.set_attribute("riskLevel", report["riskLevel"])
+        span.set_attribute("totalDependencies", report["totalDependencies"])
+    return report
+
+
+def _analyze(manifests: dict[str, str]) -> dict[str, Any]:
     findings: list[dict[str, Any]] = []
     total = 0
     unpinned = 0

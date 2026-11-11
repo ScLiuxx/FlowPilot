@@ -28,21 +28,43 @@ import java.util.Map;
 @RequiredArgsConstructor
 public class AgentNodeDispatcher {
 
+    /** The agent type of a single model call. */
+    public static final String AGENT_TYPE_LLM = "LLM";
+
+    /** The agent type of the full repository analysis. */
+    public static final String AGENT_TYPE_REPOSITORY_ANALYST = "REPOSITORY_ANALYST";
+
     private final AgentInvocationService invocationService;
     private final NodeExecutionMapper nodeExecutionMapper;
     private final WorkflowExecutionMapper executionMapper;
 
     /**
      * Publishes the execute message for an agent node.
+     *
+     * @param traceId the trace of the execution, the agent service continues it
      */
-    public void dispatch(NodeExecution node, WorkflowNodeDefinition definition) {
+    public void dispatch(NodeExecution node, WorkflowNodeDefinition definition, String traceId) {
         Map<String, Object> input = buildAgentInput(node, definition);
 
-        String agentType = "REPOSITORY_ANALYST";
+        String agentType = resolveAgentType(definition);
+        invocationService.dispatch(node, definition, input, agentType, traceId);
+    }
+
+    /**
+     * The agent type of a node.
+     *
+     * <p>An LLM node is a single model call and an AGENT node is a full LangGraph execution, so
+     * the two need different agent types. Without an explicit configuration the type follows the
+     * node type.
+     */
+    private String resolveAgentType(WorkflowNodeDefinition definition) {
         if (definition.getConfig() != null && definition.getConfig().get("agentType") != null) {
-            agentType = String.valueOf(definition.getConfig().get("agentType"));
+            return String.valueOf(definition.getConfig().get("agentType"));
         }
-        invocationService.dispatch(node, definition, input, agentType);
+        if (definition.getType() != null && NodeType.LLM.name().equalsIgnoreCase(definition.getType())) {
+            return AGENT_TYPE_LLM;
+        }
+        return AGENT_TYPE_REPOSITORY_ANALYST;
     }
 
     /**

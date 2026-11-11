@@ -79,6 +79,14 @@ class ErrorCategory(str, Enum):
     INTERNAL = "INTERNAL"
 
 
+#: Routing key of every result event the agent service produces.
+ROUTING_BY_MESSAGE_TYPE: dict[MessageType, str] = {
+    MessageType.AGENT_COMPLETED: ROUTING_AGENT_COMPLETED,
+    MessageType.AGENT_FAILED: ROUTING_AGENT_FAILED,
+    MessageType.AGENT_INTERRUPTED: ROUTING_AGENT_INTERRUPTED,
+}
+
+
 class ErrorPayload(BaseModel):
     """Mirrors ``common/error.schema.json``."""
 
@@ -96,6 +104,9 @@ class TokenUsage(BaseModel):
 
     inputTokens: int = 0
     outputTokens: int = 0
+    llmCalls: int = 0
+    toolCalls: int = 0
+    toolFailures: int = 0
 
     @property
     def total(self) -> int:
@@ -117,6 +128,7 @@ class MessageEnvelope(BaseModel):
     attemptNo: int | None = None
     invocationId: int | None = None
     traceId: str
+    spanId: str | None = None
     timestamp: datetime
     producer: str = PRODUCER
     payload: dict[str, Any] = Field(default_factory=dict)
@@ -304,6 +316,30 @@ def build_envelope(
 def envelope_to_dict(envelope: MessageEnvelope) -> dict[str, Any]:
     """Serialise an envelope to the exact wire format of the protocol."""
     return envelope.model_dump(mode="json")
+
+
+def build_outcome_envelope(
+    source: MessageEnvelope,
+    message_type: MessageType,
+    payload: dict[str, Any],
+) -> MessageEnvelope:
+    """Build the envelope of a result event derived from ``source``.
+
+    The result event keeps the trace and the correlation id of the command and
+    points at it through ``causationId``.
+    """
+    return build_envelope(
+        message_type,
+        workflow_execution_id=source.workflowExecutionId,
+        trace_id=source.traceId,
+        payload=payload,
+        correlation_id=source.correlationId,
+        causation_id=source.messageId,
+        node_execution_id=source.nodeExecutionId,
+        attempt_no=source.attemptNo,
+        invocation_id=source.invocationId,
+        producer=PRODUCER,
+    )
 
 
 def parse_envelope(raw: bytes | str | dict[str, Any]) -> MessageEnvelope:

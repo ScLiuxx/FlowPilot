@@ -121,7 +121,7 @@ async def test_a_redelivered_resume_does_not_resume_twice(executor, store, journ
 
     # the side effect in front of the interrupt happened exactly once
     approval_entries = [
-        key for key in journal.entries() if key.startswith("approval-request:")
+        key for key in await journal.entries() if key.startswith("approval-request:")
     ]
     assert len(approval_entries) == 1
 

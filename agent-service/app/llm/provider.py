@@ -18,13 +18,17 @@ import json
 from dataclasses import dataclass
 from typing import Any, Protocol, Sequence, runtime_checkable
 
+from opentelemetry.trace import Status, StatusCode
+
 from app.config.settings import Settings
 from app.runtime.errors import BusinessError, TransientError
+from app.telemetry import get_tracer
 
 #: Task keys understood by the deterministic fake model.
 TASK_REPOSITORY_ANALYSIS = "repository_analysis"
 TASK_DEPENDENCY_ANALYSIS = "dependency_analysis"
 TASK_REPORT_REVIEW = "report_review"
+TASK_LLM_SUMMARY = "llm_summary"
 
 _SYSTEM_PROMPT_PREFIX = "TASK_KEY="
 
@@ -138,43 +142,56 @@ class OpenAICompatibleChatModel:
             "temperature": temperature,
             "messages": [{"role": m.role, "content": m.content} for m in messages],
         }
-        try:
-            response = await client.post(
-                f"{self.base_url}/chat/completions",
-                json=payload,
-                headers={
-                    "Authorization": f"Bearer {self.api_key}",
-                    "Content-Type": "application/json",
-                },
+        # The span carries the model and the token counters only: the prompt
+        # and the answer must never leak into a trace.
+        tracer = get_tracer()
+        with tracer.start_as_current_span(
+            "llm.call", attributes={"model": self.model}
+        ) as span:
+            try:
+                response = await client.post(
+                    f"{self.base_url}/chat/completions",
+                    json=payload,
+                    headers={
+                        "Authorization": f"Bearer {self.api_key}",
+                        "Content-Type": "application/json",
+                    },
+                )
+            except Exception as exc:  # network level failure
+                span.record_exception(exc)
+                span.set_status(Status(StatusCode.ERROR, type(exc).__name__))
+                raise TransientError(
+                    f"model request failed: {type(exc).__name__}",
+                    error_code="LLM_REQUEST_FAILED",
+                    diagnostics={"error": str(exc)},
+                ) from exc
+            if response.status_code == 429:
+                span.set_status(Status(StatusCode.ERROR, "rate limited"))
+                raise TransientError(
+                    "model provider rate limited the request",
+                    error_code="LLM_RATE_LIMITED",
+                )
+            if response.status_code >= 400:
+                span.set_status(Status(StatusCode.ERROR, f"HTTP {response.status_code}"))
+                raise TransientError(
+                    f"model provider returned HTTP {response.status_code}",
+                    error_code="LLM_REQUEST_FAILED",
+                    diagnostics={"status": response.status_code},
+                )
+            data = response.json()
+            choices = data.get("choices") or []
+            content = ""
+            if choices:
+                content = (choices[0].get("message") or {}).get("content") or ""
+            usage = data.get("usage") or {}
+            result = ChatResult(
+                content=content,
+                input_tokens=int(usage.get("prompt_tokens") or 0),
+                output_tokens=int(usage.get("completion_tokens") or 0),
             )
-        except Exception as exc:  # network level failure
-            raise TransientError(
-                f"model request failed: {type(exc).__name__}",
-                error_code="LLM_REQUEST_FAILED",
-                diagnostics={"error": str(exc)},
-            ) from exc
-        if response.status_code == 429:
-            raise TransientError(
-                "model provider rate limited the request",
-                error_code="LLM_RATE_LIMITED",
-            )
-        if response.status_code >= 400:
-            raise TransientError(
-                f"model provider returned HTTP {response.status_code}",
-                error_code="LLM_REQUEST_FAILED",
-                diagnostics={"status": response.status_code},
-            )
-        data = response.json()
-        choices = data.get("choices") or []
-        content = ""
-        if choices:
-            content = (choices[0].get("message") or {}).get("content") or ""
-        usage = data.get("usage") or {}
-        return ChatResult(
-            content=content,
-            input_tokens=int(usage.get("prompt_tokens") or 0),
-            output_tokens=int(usage.get("completion_tokens") or 0),
-        )
+            span.set_attribute("inputTokens", result.input_tokens)
+            span.set_attribute("outputTokens", result.output_tokens)
+        return result
 
 
 def build_chat_model(settings: Settings) -> ChatModel:

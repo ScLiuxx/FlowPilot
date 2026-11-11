@@ -16,24 +16,15 @@ from aio_pika import DeliveryMode, ExchangeType, Message
 from app.config.logging import get_logger
 from app.config.settings import Settings, get_settings
 from app.messaging.events import (
-    PRODUCER,
-    ROUTING_AGENT_COMPLETED,
-    ROUTING_AGENT_FAILED,
-    ROUTING_AGENT_INTERRUPTED,
+    ROUTING_BY_MESSAGE_TYPE,
     MessageEnvelope,
     MessageType,
     ProtocolSchemaRegistry,
-    build_envelope,
+    build_outcome_envelope,
     envelope_to_dict,
 )
 
 logger = get_logger(__name__)
-
-_ROUTING_BY_MESSAGE_TYPE = {
-    MessageType.AGENT_COMPLETED: ROUTING_AGENT_COMPLETED,
-    MessageType.AGENT_FAILED: ROUTING_AGENT_FAILED,
-    MessageType.AGENT_INTERRUPTED: ROUTING_AGENT_INTERRUPTED,
-}
 
 
 class EventPublisher:
@@ -113,19 +104,7 @@ class EventPublisher:
         payload: dict[str, Any],
     ) -> MessageEnvelope:
         """Build the envelope of a result event derived from ``source``."""
-        envelope = build_envelope(
-            message_type,
-            workflow_execution_id=source.workflowExecutionId,
-            trace_id=source.traceId,
-            payload=payload,
-            correlation_id=source.correlationId,
-            causation_id=source.messageId,
-            node_execution_id=source.nodeExecutionId,
-            attempt_no=source.attemptNo,
-            invocation_id=source.invocationId,
-            producer=PRODUCER,
-        )
-        return envelope
+        return build_outcome_envelope(source, message_type, payload)
 
     async def publish_outcome(
         self, source: MessageEnvelope, message_type: MessageType, payload: dict[str, Any]
@@ -133,7 +112,7 @@ class EventPublisher:
         """Publish an agent result event."""
         envelope = self.build_outcome_envelope(source, message_type, payload)
         self.validate(envelope)
-        routing_key = _ROUTING_BY_MESSAGE_TYPE.get(message_type, message_type.value)
+        routing_key = ROUTING_BY_MESSAGE_TYPE.get(message_type, message_type.value)
         return await self.publish(envelope, routing_key)
 
     def validate(self, envelope: MessageEnvelope) -> None:

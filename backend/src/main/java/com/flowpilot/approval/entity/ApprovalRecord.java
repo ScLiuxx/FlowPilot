@@ -47,6 +47,23 @@ public class ApprovalRecord {
     private LocalDateTime requestedAt;
     private LocalDateTime decidedAt;
 
+    /**
+     * The moment the approval expires.
+     *
+     * <p>An approval without a deadline waits forever. The architecture design asks for a timeout
+     * handling, because a workflow that waits for a reviewer nobody will answer must not block
+     * the resources of the platform forever.
+     */
+    private LocalDateTime expireAt;
+
+    /**
+     * What happens when the approval expires.
+     *
+     * <p>{@code FAIL} ends the workflow with an error, {@code AUTO_APPROVE} lets the workflow
+     * continue as if the reviewer had agreed.
+     */
+    private String timeoutAction;
+
     private Long approverId;
     private String comment;
 

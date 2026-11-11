@@ -111,10 +111,37 @@ flowpilot:
     enabled: true
     interval-ms: 15000
     batch-size: 50
+    # A node that stays ready without a worker was never executed, for example because the
+    # consumer died between the deduplication mark and the lease. It is scheduled again.
+    ready-enabled: true
+    ready-interval-ms: 30000
+    ready-timeout-seconds: 300
+    ready-batch-size: 50
   retry:
     enabled: true
     interval-ms: 5000
     batch-size: 50
+  approval:
+    # The deadline of an approval. Zero means that an approval waits forever.
+    timeout-minutes: ${APPROVAL_TIMEOUT_MINUTES:1440}
+    timeout-action: ${APPROVAL_TIMEOUT_ACTION:FAIL}
+    timeout-scan-enabled: true
+    timeout-scan-interval-ms: 60000
+    timeout-scan-batch-size: 50
+  retention:
+    # The data lifecycle of the database design: the events are archived, the outbox rows and
+    # the deduplication records are deleted after they are not needed any more.
+    enabled: true
+    interval-ms: 3600000
+    event-days: 30
+    outbox-days: 7
+    consume-record-days: 7
+  tracing:
+    service-name: flowpilot-backend
+    # The OTLP endpoint of the collector. Without it the spans stay inside the service.
+    exporter-otlp-endpoint: ${OTEL_EXPORTER_OTLP_ENDPOINT:}
+    exporter-otlp-timeout-seconds: 10
+    sampling-probability: ${OTEL_SAMPLING_PROBABILITY:1.0}
   messaging:
     outbox:
       enabled: true
@@ -123,6 +150,10 @@ flowpilot:
       batch-size: 100
   agent:
     service-url: ${AGENT_SERVICE_URL:http://localhost:8000}
+    # The token of the internal endpoints of the agent service. It protects the endpoint that
+    # reports the real state of an invocation.
+    internal-token: ${AGENT_INTERNAL_TOKEN:}
+    query-timeout-seconds: 10
     max-execution-seconds: 900
   github:
     # The token raises the API rate limit. Without it the public limit applies.

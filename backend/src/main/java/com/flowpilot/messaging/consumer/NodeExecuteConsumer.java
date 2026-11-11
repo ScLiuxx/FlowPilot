@@ -1,5 +1,6 @@
 package com.flowpilot.messaging.consumer;
 
+import com.flowpilot.common.trace.TraceIds;
 import com.flowpilot.common.util.JsonUtils;
 import com.flowpilot.execution.worker.NodeWorker;
 import com.flowpilot.messaging.config.RabbitTopology;
@@ -52,6 +53,19 @@ public class NodeExecuteConsumer extends AbstractEnvelopeConsumer {
         NodeExecutePayload payload = JsonUtils.mapper()
                 .convertValue(envelope.getPayload(), NodeExecutePayload.class);
         worker.execute(payload, envelope.getWorkflowExecutionId(), envelope.getNodeExecutionId(),
-                envelope.getAttemptNo());
+                envelope.getAttemptNo(), envelope.getTraceId(), parentSpanOf(envelope));
+    }
+
+    /**
+     * The span the execution continues.
+     *
+     * <p>The envelope carries the span of the producer. A message from an older producer has no
+     * span, so the id is derived from the message id instead.
+     */
+    private String parentSpanOf(MessageEnvelope<?> envelope) {
+        if (envelope.getSpanId() != null && !envelope.getSpanId().isBlank()) {
+            return envelope.getSpanId();
+        }
+        return TraceIds.spanIdOf(envelope.getMessageId());
     }
 }

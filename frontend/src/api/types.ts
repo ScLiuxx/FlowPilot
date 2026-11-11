@@ -256,6 +256,38 @@ export interface ExecutionCancelResult {
   status: string
 }
 
+/* ---------------------------------------------------------- 链路追踪 --- */
+
+/** span 属性值：字符串 / 数字 / 布尔 */
+export type TraceAttributeValue = string | number | boolean
+
+/**
+ * 一次执行中的 OpenTelemetry span。
+ *
+ * 后端把 span 落库后再返回，因此 id 类字段（traceId / spanId / parentSpanId）
+ * 一律为字符串；`parentSpanId` 为 null 表示根 span，`durationMs` 为 null
+ * 表示该 span 没有记录耗时。
+ */
+export interface TraceSpan {
+  traceId: string
+  spanId: string
+  parentSpanId?: string | null
+  spanName: string
+  nodeExecutionId?: string | null
+  durationMs?: number | null
+  status?: string | null
+  attributes?: Record<string, TraceAttributeValue> | null
+  startedAt?: string | null
+}
+
+/** 执行链路追踪响应 */
+export interface TraceResponse {
+  executionId: Id
+  traceId: string
+  /** 后端尚未记录 span 时为空数组 */
+  spans: TraceSpan[]
+}
+
 /* -------------------------------------------------------------- 审批 --- */
 
 /** 审批状态 */

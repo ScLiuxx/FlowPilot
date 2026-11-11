@@ -54,3 +54,30 @@ CREATE TABLE IF NOT EXISTS agent_resume_record
 
 COMMENT ON TABLE agent_resume_record IS
     'Idempotency ledger of AgentResume messages: invocationId + resumeRequestId is unique.';
+
+-- Transactional outbox of the agent service.
+--
+-- The row is inserted in the *same* transaction as the update of the
+-- execution record, therefore the result event can never be lost: either the
+-- record and the event are both committed, or nothing is. The publisher
+-- delivers the rows to RabbitMQ and marks them as PUBLISHED.
+CREATE TABLE IF NOT EXISTS agent_outbox
+(
+    id            BIGSERIAL PRIMARY KEY,
+    message_id    TEXT        NOT NULL,
+    message_type  TEXT        NOT NULL,
+    routing_key   TEXT        NOT NULL,
+    payload       JSONB       NOT NULL,
+    status        TEXT        NOT NULL DEFAULT 'PENDING',
+    retry_count   INTEGER     NOT NULL DEFAULT 0,
+    next_retry_at TIMESTAMPTZ,
+    created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+    published_at  TIMESTAMPTZ
+);
+
+CREATE INDEX IF NOT EXISTS idx_agent_outbox_status
+    ON agent_outbox (status, next_retry_at, created_at);
+
+COMMENT ON TABLE agent_outbox IS
+    'Transactional outbox of the agent result events; a row is written in the same '
+    'transaction as the execution record and is delivered to RabbitMQ afterwards.';

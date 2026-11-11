@@ -77,6 +77,50 @@ async def get_checkpoints(request: Request, invocation_id: int, limit: int = 20)
     return {"invocationId": invocation_id, "threadId": thread_id, "checkpoints": checkpoints}
 
 
+@router.get(
+    "/invocations/{invocation_id}/result",
+    dependencies=[Depends(require_internal_token)],
+)
+async def get_invocation_result(request: Request, invocation_id: int) -> dict[str, Any]:
+    """The *real* state of an agent invocation.
+
+    The Java backend queries this endpoint when it recovers: the agent side is
+    the authority for the result of an invocation, the business database may
+    still show the node as running.
+    """
+    store = getattr(request.app.state, "store", None)
+    if store is None:
+        raise HTTPException(status_code=503, detail="no execution store configured")
+    record = await store.get(invocation_id)
+    if record is None:
+        raise HTTPException(status_code=404, detail="invocation not found")
+    return _result_to_dict(record)
+
+
+def _result_to_dict(record: Any) -> dict[str, Any]:
+    """Build the result view of an execution record."""
+    stored_result = record.result or {}
+    result = stored_result.get("result") if isinstance(stored_result, dict) else None
+    usage = record.usage or {}
+    return {
+        "invocationId": record.invocation_id,
+        "threadId": record.thread_id,
+        "agentType": record.agent_type,
+        "status": record.status,
+        "checkpointId": record.checkpoint_id,
+        "result": result if isinstance(result, dict) else None,
+        "error": record.error if isinstance(record.error, dict) else None,
+        "usage": {
+            "inputTokens": int(usage.get("inputTokens", 0) or 0),
+            "outputTokens": int(usage.get("outputTokens", 0) or 0),
+            "llmCalls": int(usage.get("llmCalls", 0) or 0),
+            "toolCalls": int(usage.get("toolCalls", 0) or 0),
+            "toolFailures": int(usage.get("toolFailures", 0) or 0),
+        },
+        "updatedAt": record.updated_at.isoformat() if record.updated_at else None,
+    }
+
+
 def _record_to_dict(record: Any) -> dict[str, Any]:
     return {
         "invocationId": record.invocation_id,

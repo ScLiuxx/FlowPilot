@@ -134,7 +134,8 @@ class ProtocolContractTest {
                 .checkpointId("checkpoint-001")
                 .result(Map.of("architectureAnalysis", "分层架构"))
                 .usage(AgentCompletedPayload.Usage.builder()
-                        .inputTokens(5000L).outputTokens(2000L).build())
+                        .inputTokens(5000L).outputTokens(2000L)
+                        .llmCalls(3L).toolCalls(7L).toolFailures(1L).build())
                 .build());
 
         assertPayload("agent/agent-failed.schema.json", AgentFailedPayload.builder()
@@ -211,6 +212,8 @@ class ProtocolContractTest {
         envelope.setNodeExecutionId(20001L);
         envelope.setAttemptNo(1);
         envelope.setInvocationId(30001L);
+        // The span of the producer, so the consumer can continue the trace.
+        envelope.setSpanId("a1b2c3d4e5f60718");
         return envelope;
     }
 

@@ -34,12 +34,18 @@ async def ready(request: Request, response: Response) -> dict[str, Any]:
     checks: dict[str, Any] = {}
 
     store = getattr(request.app.state, "store", None)
+    degraded = bool(getattr(request.app.state, "persistence_degraded", False))
     if settings.persistence_enabled and store is not None:
-        try:
-            await store.list_records(limit=1)
-            checks["postgres"] = "UP"
-        except Exception as exc:
-            checks["postgres"] = f"DOWN: {type(exc).__name__}"
+        if degraded:
+            # The service runs on the in memory fallback: the persistence is
+            # *not* available, the probe must not report it as healthy.
+            checks["postgres"] = "DEGRADED: in-memory fallback"
+        else:
+            try:
+                await store.list_records(limit=1)
+                checks["postgres"] = "UP"
+            except Exception as exc:
+                checks["postgres"] = f"DOWN: {type(exc).__name__}"
     else:
         checks["postgres"] = "DISABLED"
 

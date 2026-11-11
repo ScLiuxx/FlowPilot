@@ -1,5 +1,8 @@
 package com.flowpilot.execution.recovery;
 
+import com.flowpilot.agent.entity.AgentInvocation;
+import com.flowpilot.agent.mapper.AgentInvocationMapper;
+import com.flowpilot.agent.service.AgentResultClient;
 import com.flowpilot.common.util.JsonUtils;
 import com.flowpilot.execution.entity.NodeExecution;
 import com.flowpilot.execution.entity.WorkflowExecution;
@@ -55,6 +58,14 @@ public class RecoveryScheduler {
     private final NodeResultService resultService;
     private final ExecutionEventService eventService;
     private final TransactionTemplate transactionTemplate;
+    private final AgentInvocationMapper invocationMapper;
+    private final AgentResultClient agentResultClient;
+
+    /**
+     * How long the lease of a running agent node is extended.
+     */
+    @Value("${flowpilot.worker.lease-seconds:60}")
+    private long leaseSeconds;
 
     @Value("${flowpilot.recovery.batch-size:50}")
     private int batchSize;
@@ -118,6 +129,11 @@ public class RecoveryScheduler {
                     current.getId(), current.getWorkerId(), attemptNo, nodeType);
 
             if (nodeType.isAgentBacked()) {
+                // The agent may have finished while the result message was lost. The agent
+                // service knows the real state, so it is asked before the node is run again.
+                if (recoverAgentResult(current, execution)) {
+                    return;
+                }
                 // The agent node keeps its invocation, so the redispatch continues from the checkpoint.
                 current.setCurrentAttempt(attemptNo - 1);
                 redispatchAgent(current, execution);
@@ -129,6 +145,64 @@ public class RecoveryScheduler {
                     "WORKER_LEASE_EXPIRED", "The worker stopped sending heartbeats",
                     "TRANSIENT", true, retryPolicyOf(current, execution));
         });
+    }
+
+    /**
+     * Asks the agent service what really happened to the invocation.
+     *
+     * <p>The result event of the agent may have been lost: the agent wrote its checkpoint and
+     * sent the message, and then the Java service never received it. Running the agent again
+     * would waste the work and cost tokens, so the real state is read first.
+     *
+     * @return true when the result was recovered and the node does not have to run again
+     */
+    private boolean recoverAgentResult(NodeExecution node, WorkflowExecution execution) {
+        List<AgentInvocation> invocations = invocationMapper.findByNodeExecutionId(node.getId());
+        if (invocations.isEmpty()) {
+            return false;
+        }
+        AgentInvocation invocation = invocations.get(invocations.size() - 1);
+        AgentResultClient.AgentExecutionState state = agentResultClient.query(invocation.getId());
+        if (state == null) {
+            return false;
+        }
+        if (state.succeeded() && state.result() != null) {
+            log.info("the agent invocation {} had already finished, its result is recovered",
+                    invocation.getId());
+            invocation.setStatus(AgentInvocation.STATUS_SUCCEEDED);
+            invocation.setCheckpointId(state.checkpointId());
+            invocation.setFinishedAt(LocalDateTime.now());
+            invocationMapper.updateById(invocation);
+            resultService.complete(node.getId(), invocation.getAttemptNo(), node.getLeaseToken(),
+                    state.result());
+            scheduler.onNodeCompleted(execution.getId(), node.getNodeKey());
+            return true;
+        }
+        if (state.failed()) {
+            log.info("the agent invocation {} had already failed, its error is recovered",
+                    invocation.getId());
+            invocation.setStatus(AgentInvocation.STATUS_FAILED);
+            invocation.setCheckpointId(state.checkpointId());
+            invocation.setFinishedAt(LocalDateTime.now());
+            invocationMapper.updateById(invocation);
+            Map<String, Object> error = state.error() == null ? Map.of() : state.error();
+            resultService.fail(node.getId(), invocation.getAttemptNo(), node.getLeaseToken(),
+                    String.valueOf(error.getOrDefault("errorCode", "AGENT_FAILED")),
+                    String.valueOf(error.getOrDefault("errorMessage", "The agent failed")),
+                    String.valueOf(error.getOrDefault("errorCategory", "BUSINESS")),
+                    Boolean.FALSE.equals(error.get("retryable")), null);
+            return true;
+        }
+        if (state.running()) {
+            // The agent is still working. The lease of the node is extended, so the recovery
+            // scanner does not interfere with the running invocation.
+            log.info("the agent invocation {} is still running, the lease is extended",
+                    invocation.getId());
+            nodeExecutionMapper.extendLease(node.getId(), node.getLeaseToken(),
+                    LocalDateTime.now().plusSeconds(leaseSeconds));
+            return true;
+        }
+        return false;
     }
 
     /**

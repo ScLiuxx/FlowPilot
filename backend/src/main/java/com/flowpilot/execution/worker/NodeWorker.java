@@ -2,6 +2,8 @@ package com.flowpilot.execution.worker;
 
 import com.flowpilot.approval.service.ApprovalService;
 import com.flowpilot.common.id.SnowflakeIdGenerator;
+import com.flowpilot.common.metrics.FlowPilotMetrics;
+import com.flowpilot.common.trace.TracingService;
 import com.flowpilot.common.util.JsonUtils;
 import com.flowpilot.execution.entity.NodeExecution;
 import com.flowpilot.execution.entity.NodeExecutionAttempt;
@@ -23,14 +25,17 @@ import com.flowpilot.messaging.protocol.payloads.NodeExecutePayload;
 import com.flowpilot.workflow.definition.WorkflowDefinitionDocument;
 import com.flowpilot.workflow.definition.WorkflowNodeDefinition;
 import com.flowpilot.workflow.entity.WorkflowVersion;
+import com.flowpilot.workflow.parser.NodeSchemaRegistry;
 import com.flowpilot.workflow.service.WorkflowService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 
+import java.time.Duration;
 import java.time.LocalDateTime;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
@@ -58,6 +63,8 @@ public class NodeWorker {
     private final WorkflowService workflowService;
     private final ApprovalService approvalService;
     private final SnowflakeIdGenerator idGenerator;
+    private final TracingService tracingService;
+    private final FlowPilotMetrics metrics;
 
     @Value("${flowpilot.worker.id:worker-01}")
     private String workerId;
@@ -77,9 +84,11 @@ public class NodeWorker {
      * @param executionId   the workflow execution
      * @param nodeExecutionId the node execution
      * @param attemptNo     the attempt the message asks for
+     * @param traceId       the trace of the execution
+     * @param parentSpanId  the span of the message that triggered the execution
      */
     public void execute(NodeExecutePayload payload, Long executionId, Long nodeExecutionId,
-                        Integer attemptNo) {
+                        Integer attemptNo, String traceId, String parentSpanId) {
         NodeExecution node = nodeExecutionMapper.selectById(nodeExecutionId);
         if (node == null) {
             log.warn("node execution {} does not exist, ignoring the message", nodeExecutionId);
@@ -116,7 +125,13 @@ public class NodeWorker {
         // duration is not mistaken for a worker that died.
         Heartbeat heartbeat = startHeartbeat(refreshed, leaseToken);
 
-        try {
+        try (TracingService.TracedSpan span = tracingService.start("node." + refreshed.getNodeKey(),
+                traceId, parentSpanId, refreshed.getWorkflowExecutionId(), refreshed.getId(),
+                Map.of("nodeKey", refreshed.getNodeKey(),
+                        "nodeType", refreshed.getNodeType(),
+                        "attempt", effectiveAttempt,
+                        "worker", workerId))) {
+            span.makeCurrent();
             WorkflowDefinitionDocument document = loadDocument(refreshed.getWorkflowExecutionId());
             WorkflowNodeDefinition definition = findNode(document, refreshed.getNodeKey());
             NodeType nodeType = NodeType.from(refreshed.getNodeType());
@@ -140,14 +155,32 @@ public class NodeWorker {
             }
 
             if (result.isSuccess()) {
+                List<String> violations = NodeSchemaRegistry.validate(
+                        NodeSchemaRegistry.outputSchema(definition == null ? null : definition.config()),
+                        result.getOutput());
+                if (!violations.isEmpty()) {
+                    // The node produced something that does not fit its own schema. Reporting it
+                    // as a failure is better than storing data the successor cannot read.
+                    span.fail("NODE_OUTPUT_SCHEMA_VIOLATION");
+                    resultService.fail(refreshed.getId(), effectiveAttempt, leaseToken,
+                            "NODE_OUTPUT_SCHEMA_VIOLATION",
+                            "The output of the node does not fit the declared schema: "
+                                    + String.join("; ", violations),
+                            ErrorCategory.VALIDATION.name(), false, null);
+                    recordNodeMetrics(refreshed, nodeType, NodeStatus.FAILED.name(), span);
+                    return;
+                }
                 resultService.complete(refreshed.getId(), effectiveAttempt, leaseToken, result.getOutput());
+                recordNodeMetrics(refreshed, nodeType, NodeStatus.SUCCEEDED.name(), span);
             } else {
+                span.fail(result.getErrorCode());
                 resultService.fail(refreshed.getId(), effectiveAttempt, leaseToken,
                         result.getErrorCode(), result.getErrorMessage(),
                         result.getErrorCategory() == null ? ErrorCategory.INTERNAL.name()
                                 : result.getErrorCategory().name(),
                         result.isRetryable(),
                         definition == null ? null : definition.getRetryPolicy());
+                recordNodeMetrics(refreshed, nodeType, NodeStatus.FAILED.name(), span);
             }
         } catch (Exception ex) {
             log.error("node {} execution threw an unexpected exception", nodeExecutionId, ex);
@@ -157,6 +190,19 @@ public class NodeWorker {
         } finally {
             heartbeat.stop();
         }
+    }
+
+    /**
+     * Reports the duration of a node execution.
+     */
+    private void recordNodeMetrics(NodeExecution node, NodeType nodeType, String status,
+                                   TracingService.TracedSpan span) {
+        if (node.getStartedAt() != null) {
+            long millis = Duration.between(node.getStartedAt(), LocalDateTime.now()).toMillis();
+            metrics.recordNodeDuration(nodeType.name(), status, millis);
+        }
+        metrics.countNodeExecution(nodeType.name(), status);
+        span.attribute("flowpilot.node_status", status);
     }
 
     /**

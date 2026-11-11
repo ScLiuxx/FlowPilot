@@ -45,4 +45,38 @@ public interface ApprovalRecordMapper extends BaseMapper<ApprovalRecord> {
              LIMIT #{limit}
             """)
     java.util.List<ApprovalRecord> findPending(@Param("limit") int limit);
+
+    /**
+     * The approvals whose deadline elapsed.
+     *
+     * <p>An approval without a deadline never expires, so the condition on the deadline is
+     * explicit.
+     */
+    @Select("""
+            SELECT * FROM approval_record
+             WHERE status = 'PENDING'
+               AND expire_at IS NOT NULL
+               AND expire_at <= #{now}
+             ORDER BY expire_at
+             LIMIT #{limit}
+            """)
+    java.util.List<ApprovalRecord> findExpired(@Param("now") java.time.LocalDateTime now,
+                                               @Param("limit") int limit);
+
+    /**
+     * Conditional update of an expired approval. Only the first scanner wins, so an approval is
+     * never expired twice.
+     */
+    @Update("""
+            UPDATE approval_record
+               SET status = 'EXPIRED',
+                   decision_data = #{decisionData},
+                   comment = #{comment},
+                   decided_at = CURRENT_TIMESTAMP(3)
+             WHERE id = #{id}
+               AND status = 'PENDING'
+            """)
+    int expire(@Param("id") Long id,
+               @Param("decisionData") String decisionData,
+               @Param("comment") String comment);
 }

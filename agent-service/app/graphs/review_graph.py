@@ -77,7 +77,7 @@ async def approval_node(state: AgentState, runtime: Runtime) -> dict[str, Any]:
     # Must be idempotent: LangGraph re-executes this node on resume. The
     # journal is keyed by the review id, so the effect is recorded exactly
     # once even though the node body runs twice.
-    context.journal.record_once(
+    await context.journal.record_once(
         f"approval-request:{review_id}",
         {"invocationId": context.invocation_id, "reviewId": review_id},
     )

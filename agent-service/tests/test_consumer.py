@@ -51,6 +51,22 @@ class FakePublisher:
         return None
 
 
+class FailingExecutor:
+    """An executor whose work always fails with a transient error."""
+
+    def __init__(self, error: Exception) -> None:
+        self.error = error
+
+    async def execute(self, envelope, payload):
+        raise self.error
+
+    async def resume(self, envelope, payload):
+        raise self.error
+
+    async def cancel(self, envelope, payload):
+        raise self.error
+
+
 @pytest.fixture
 def consumer(executor, settings) -> AgentMessageConsumer:
     return AgentMessageConsumer(
@@ -58,7 +74,7 @@ def consumer(executor, settings) -> AgentMessageConsumer:
     )
 
 
-async def test_a_valid_message_is_acked_after_the_work_succeeded(consumer):
+async def test_a_valid_message_is_acked_after_the_work_succeeded(consumer, store):
     envelope = make_execute_envelope()
     message = FakeMessage(body_of(envelope), message_id=envelope.messageId)
 
@@ -66,11 +82,13 @@ async def test_a_valid_message_is_acked_after_the_work_succeeded(consumer):
 
     assert message.acked is True
     assert message.rejected is False
-    assert len(consumer._publisher.published) == 1
-    message_type, payload = consumer._publisher.published[0]
-    assert message_type == MessageType.AGENT_COMPLETED
-    assert payload["invocationId"] == 30001
-    assert payload["threadId"] == "flowpilot-30001"
+    # The event is not published by the consumer: it is persisted in the
+    # transactional outbox and delivered by the outbox publisher.
+    assert consumer._publisher.published == []
+    outbox = await store.list_outbox()
+    assert len(outbox) == 1
+    assert outbox[0].message_type == "AgentCompleted"
+    assert outbox[0].routing_key == "agent.completed"
 
 
 async def test_a_malformed_message_is_rejected_into_the_dead_letter_queue(consumer):
@@ -106,9 +124,13 @@ async def test_a_payload_that_violates_the_schema_is_rejected(consumer):
     assert message.rejected is True
 
 
-async def test_a_transient_broker_failure_is_requeued(executor, settings):
-    publisher = FakePublisher(error=aio_pika_exceptions.AMQPConnectionError("broker down"))
-    consumer = AgentMessageConsumer(executor=executor, publisher=publisher, settings=settings)
+async def test_a_transient_failure_is_requeued(executor, settings):
+    """A failure of the agent runtime requeues the command."""
+    consumer = AgentMessageConsumer(
+        executor=FailingExecutor(aio_pika_exceptions.AMQPConnectionError("broker down")),
+        publisher=FakePublisher(),
+        settings=settings,
+    )
     envelope = make_execute_envelope()
     message = FakeMessage(body_of(envelope), message_id=envelope.messageId)
 
@@ -120,8 +142,11 @@ async def test_a_transient_broker_failure_is_requeued(executor, settings):
 
 
 async def test_the_requeue_is_bounded_and_ends_in_the_dead_letter_queue(executor, settings):
-    publisher = FakePublisher(error=aio_pika_exceptions.AMQPConnectionError("broker down"))
-    consumer = AgentMessageConsumer(executor=executor, publisher=publisher, settings=settings)
+    consumer = AgentMessageConsumer(
+        executor=FailingExecutor(aio_pika_exceptions.AMQPConnectionError("broker down")),
+        publisher=FakePublisher(),
+        settings=settings,
+    )
     envelope = make_execute_envelope()
 
     for _ in range(settings.rabbitmq_max_redeliveries):

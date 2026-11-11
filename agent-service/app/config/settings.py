@@ -44,10 +44,27 @@ class Settings(BaseSettings):
 
     # --- persistence (PostgreSQL / LangGraph checkpoints) ------------
     persistence_enabled: bool = True
+    # When PostgreSQL is unreachable the service refuses to start instead of
+    # silently degrading to the in memory implementations: a degraded agent
+    # loses checkpoints and idempotency, which is worse than a crash loop.
+    persistence_required: bool = True
     postgres_dsn: str = "postgresql://flowpilot:flowpilot@127.0.0.1:5432/flowpilot_agent"
     postgres_pool_min_size: int = 1
     postgres_pool_max_size: int = 5
     postgres_connect_timeout: int = 5
+
+    # --- outbox (transactional result events) -------------------------
+    outbox_poll_interval_seconds: float = 1.0
+    outbox_batch_size: int = 20
+    outbox_max_retry_seconds: int = 60
+    # A row that stayed in PUBLISHING longer than this is considered lost
+    # (the publisher crashed) and is returned to PENDING.
+    outbox_publishing_timeout_seconds: int = 300
+
+    # --- idempotency journal (Redis) -----------------------------------
+    # An empty value disables Redis and falls back to the in memory journal.
+    redis_url: str = "redis://localhost:6379/0"
+    idempotency_journal_ttl_seconds: int = 7 * 24 * 3600
 
     # --- LLM provider ------------------------------------------------
     # When neither LLM_API_KEY nor OPENAI_API_KEY is present the service
@@ -80,6 +97,12 @@ class Settings(BaseSettings):
         default=None,
         description="Optional bearer token protecting /internal endpoints.",
     )
+
+    # --- OpenTelemetry --------------------------------------------------
+    # Without an endpoint the spans are only created locally (no exporter).
+    otel_enabled: bool = True
+    otel_exporter_otlp_endpoint: str = ""
+    otel_service_name: str = "flowpilot-agent-service"
 
 
 @lru_cache(maxsize=1)

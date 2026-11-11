@@ -251,6 +251,36 @@ Body: `{ "reason": "USER_REQUEST" }`
 
 Response `data`: `{ "executionId": "10001", "status": "CANCEL_REQUESTED" }`
 
+### GET /api/v1/executions/{executionId}/trace
+
+The spans of the execution, so the console can show the chain of the run. The spans are the
+OpenTelemetry spans of the platform: `workflow.scheduler`, `node.<nodeKey>`, and the spans the
+agent service creates for a model or a tool call.
+
+Response `data`:
+
+```json
+{
+  "executionId": "10001",
+  "traceId": "4bf92f3577b34da6a3ce929d0e0e4736",
+  "spans": [
+    {
+      "traceId": "4bf92f3577b34da6a3ce929d0e0e4736",
+      "spanId": "a1b2c3d4e5f60718",
+      "parentSpanId": null,
+      "spanName": "workflow.scheduler",
+      "nodeExecutionId": "20001",
+      "durationMs": 12,
+      "status": "OK",
+      "attributes": { "phase": "start" },
+      "startedAt": "2026-11-11T10:00:00.123"
+    }
+  ]
+}
+```
+
+`durationMs` is `null` when the span is still running, `parentSpanId` is `null` for a root span.
+
 ### POST /api/v1/executions/{executionId}/report
 
 Generates the technical due diligence report of an execution. The report is created once, a

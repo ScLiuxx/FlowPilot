@@ -3,8 +3,8 @@ import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { ArrowLeft, CircleClose, Refresh, VideoPause } from '@element-plus/icons-vue'
-import { approvalApi } from '@/api/client'
-import type { Approval, ApprovalDecision, Id, JsonObject } from '@/api/types'
+import { approvalApi, getExecutionTrace } from '@/api/client'
+import type { Approval, ApprovalDecision, Id, JsonObject, TraceResponse, TraceSpan } from '@/api/types'
 import { useAuthStore } from '@/stores/auth'
 import { useExecutionStore } from '@/stores/executions'
 import PageHeader from '@/components/PageHeader.vue'
@@ -20,12 +20,24 @@ const router = useRouter()
 const auth = useAuthStore()
 const store = useExecutionStore()
 
+/** span 节点：在原始 span 上补充子节点，用于树形展示 */
+interface TraceSpanNode extends TraceSpan {
+  children: TraceSpanNode[]
+}
+
 const executionId = computed(() => String(route.params.id))
 
 const loading = ref(true)
 const error = ref('')
 const cancelling = ref(false)
 const approvals = ref<Approval[]>([])
+
+/* 链路追踪 */
+const traceLoading = ref(false)
+const traceError = ref('')
+const traceData = ref<TraceResponse | null>(null)
+const traceRows = ref<TraceSpanNode[]>([])
+const tracePanels = ref<string[]>(['spans'])
 
 const execution = computed(() => store.current)
 const progress = computed(() => {
@@ -56,9 +68,112 @@ const outputNodeCount = computed(() => Object.keys(output.value).length)
 const hasOutput = computed(() => outputNodeCount.value > 0)
 const formattedOutput = computed(() => JSON.stringify(output.value, null, 2))
 
+/** 链路追踪：Trace ID 与 span 总数 */
+const traceId = computed(() => traceData.value?.traceId ?? '')
+const traceSpanCount = computed(() => traceData.value?.spans?.length ?? 0)
+
+/** 拉取链路追踪，失败时在区块内提示，不影响页面其它内容 */
+async function loadTrace(): Promise<void> {
+  traceLoading.value = true
+  traceError.value = ''
+  try {
+    const data = await getExecutionTrace(executionId.value)
+    traceData.value = data
+    traceRows.value = buildTraceTree(data?.spans ?? [])
+  } catch (err) {
+    traceData.value = null
+    traceRows.value = []
+    traceError.value = err instanceof Error ? err.message : '链路追踪加载失败'
+  } finally {
+    traceLoading.value = false
+  }
+}
+
+/**
+ * 按 parentSpanId 组织 span 树。
+ *
+ * parentSpanId 为空、指向不存在的 span，或父子关系成环时，一律按根节点处理，
+ * 保证任何 span 都不会丢失。
+ */
+function buildTraceTree(spans: TraceSpan[]): TraceSpanNode[] {
+  const nodeMap = new Map<string, TraceSpanNode>()
+  for (const span of spans) {
+    nodeMap.set(span.spanId, { ...span, children: [] })
+  }
+
+  const roots: TraceSpanNode[] = []
+  for (const span of spans) {
+    const node = nodeMap.get(span.spanId)
+    if (!node) continue
+    const parentId = span.parentSpanId
+    if (parentId) {
+      const parent = nodeMap.get(parentId)
+      if (parent && !hasParentCycle(nodeMap, parentId, span.spanId)) {
+        parent.children.push(node)
+        continue
+      }
+    }
+    roots.push(node)
+  }
+  return roots
+}
+
+/** 判断从 parentSpanId 沿父链回溯是否会绕回自身 */
+function hasParentCycle(
+  nodeMap: Map<string, TraceSpanNode>,
+  parentSpanId: string,
+  spanId: string
+): boolean {
+  const visited = new Set<string>([spanId])
+  let current: string | null | undefined = parentSpanId
+  while (current) {
+    if (visited.has(current)) return true
+    visited.add(current)
+    current = nodeMap.get(current)?.parentSpanId
+  }
+  return false
+}
+
+/** span 状态 → 标签类型 */
+function spanStatusType(status?: string | null): 'success' | 'danger' | 'info' {
+  const normalized = (status ?? '').toUpperCase()
+  if (normalized === 'ERROR') return 'danger'
+  if (normalized === 'OK') return 'success'
+  return 'info'
+}
+
+/** span 属性 → 可直接渲染的键值列表 */
+function attributeEntries(span: TraceSpanNode): Array<{ key: string; value: string }> {
+  const attributes = span.attributes
+  if (!attributes) return []
+  return Object.entries(attributes).map(([key, value]) => ({
+    key,
+    value: formatAttributeValue(value)
+  }))
+}
+
+/** 属性值格式化：对象等复杂值退化为 JSON 文本 */
+function formatAttributeValue(value: unknown): string {
+  if (value === null || value === undefined) return '-'
+  if (typeof value === 'string') return value
+  if (typeof value === 'number' || typeof value === 'boolean') return String(value)
+  return JSON.stringify(value) ?? '-'
+}
+
+/** span 耗时：无耗时记录时显示短横线 */
+function formatTraceDuration(durationMs?: number | null): string {
+  if (durationMs === null || durationMs === undefined || !Number.isFinite(durationMs)) {
+    return '-'
+  }
+  return `${durationMs} ms`
+}
+
 async function loadAll(): Promise<void> {
   loading.value = true
   error.value = ''
+  traceData.value = null
+  traceRows.value = []
+  traceError.value = ''
   try {
     const detail = await store.loadDetail(executionId.value)
     if (!detail) {
@@ -69,6 +184,7 @@ async function loadAll(): Promise<void> {
     await Promise.all([store.loadNodes(executionId.value), store.loadHistory(executionId.value)])
     await loadApprovals()
     syncStream()
+    void loadTrace()
   } catch {
     error.value = '执行详情加载失败，请检查后端服务是否已启动'
   } finally {
@@ -420,6 +536,94 @@ onBeforeUnmount(() => {
         </div>
       </div>
 
+      <!-- 执行链路 -->
+      <div class="fp-card fp-ed__trace">
+        <div class="fp-card__head">
+          <h2 class="fp-section-title">执行链路</h2>
+          <div class="fp-row">
+            <el-tag v-if="traceId" size="small" type="info" class="fp-mono fp-ed__trace-id">
+              {{ traceId }}
+            </el-tag>
+            <span class="fp-muted">{{ traceSpanCount }} 个 span</span>
+            <el-button size="small" text :icon="Refresh" :loading="traceLoading" @click="loadTrace">
+              刷新
+            </el-button>
+          </div>
+        </div>
+        <div class="fp-card__body">
+          <el-alert
+            v-if="traceError"
+            type="error"
+            :title="traceError"
+            description="链路追踪暂不可用，可稍后重试。"
+            show-icon
+            :closable="false"
+          />
+          <el-skeleton v-else-if="traceLoading" animated :rows="5" />
+          <el-empty
+            v-else-if="traceRows.length === 0"
+            :image-size="80"
+            description="暂无链路追踪数据，后端记录 span 后会显示在这里。"
+          />
+          <el-collapse v-else v-model="tracePanels" class="fp-ed__trace-collapse">
+            <el-collapse-item name="spans">
+              <template #title>
+                <span class="fp-row">
+                  <span>Span 明细</span>
+                  <span class="fp-muted">{{ traceSpanCount }} 个</span>
+                </span>
+              </template>
+              <el-table
+                :data="traceRows"
+                row-key="spanId"
+                default-expand-all
+                :tree-props="{ children: 'children' }"
+                style="width: 100%"
+              >
+                <el-table-column label="Span" min-width="240">
+                  <template #default="{ row }: { row: TraceSpanNode }">
+                    <div class="fp-ed__trace-name">{{ row.spanName }}</div>
+                    <div class="fp-ed__trace-span-id fp-mono">{{ row.spanId }}</div>
+                  </template>
+                </el-table-column>
+                <el-table-column label="状态" width="110">
+                  <template #default="{ row }: { row: TraceSpanNode }">
+                    <el-tag size="small" :type="spanStatusType(row.status)">
+                      {{ row.status || 'UNKNOWN' }}
+                    </el-tag>
+                  </template>
+                </el-table-column>
+                <el-table-column label="耗时" width="110" align="right">
+                  <template #default="{ row }: { row: TraceSpanNode }">
+                    <span class="fp-muted">{{ formatTraceDuration(row.durationMs) }}</span>
+                  </template>
+                </el-table-column>
+                <el-table-column label="开始时间" width="180">
+                  <template #default="{ row }: { row: TraceSpanNode }">
+                    <span class="fp-muted">{{ formatDateTime(row.startedAt) }}</span>
+                  </template>
+                </el-table-column>
+                <el-table-column label="属性" min-width="240">
+                  <template #default="{ row }: { row: TraceSpanNode }">
+                    <div v-if="attributeEntries(row).length" class="fp-ed__trace-attrs">
+                      <el-tag
+                        v-for="attr in attributeEntries(row)"
+                        :key="attr.key"
+                        size="small"
+                        type="info"
+                      >
+                        {{ attr.key }}={{ attr.value }}
+                      </el-tag>
+                    </div>
+                    <span v-else class="fp-subtle">-</span>
+                  </template>
+                </el-table-column>
+              </el-table>
+            </el-collapse-item>
+          </el-collapse>
+        </div>
+      </div>
+
       <!-- 关联审批 -->
       <div class="fp-card">
         <div class="fp-card__head">
@@ -738,6 +942,37 @@ onBeforeUnmount(() => {
 .fp-ed__approval-title {
   font-size: 13.5px;
   font-weight: 550;
+}
+
+/* 执行链路 */
+.fp-ed__trace {
+  margin-bottom: var(--sp-5);
+}
+
+.fp-ed__trace-id {
+  max-width: 320px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.fp-ed__trace-collapse :deep(.el-collapse-item__header) {
+  font-weight: 500;
+}
+
+.fp-ed__trace-name {
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+}
+
+.fp-ed__trace-span-id {
+  font-size: 11px;
+  color: var(--fp-text-subtle);
+}
+
+.fp-ed__trace-attrs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-1);
 }
 
 @media (max-width: 1200px) {

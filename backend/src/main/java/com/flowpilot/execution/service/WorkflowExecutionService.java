@@ -11,6 +11,7 @@ import com.flowpilot.common.exception.BizException;
 import com.flowpilot.common.id.SnowflakeIdGenerator;
 import com.flowpilot.common.result.ErrorCode;
 import com.flowpilot.common.result.PageResult;
+import com.flowpilot.common.trace.TraceContext;
 import com.flowpilot.common.util.Ids;
 import com.flowpilot.common.util.JsonUtils;
 import com.flowpilot.execution.entity.NodeExecution;
@@ -99,6 +100,9 @@ public class WorkflowExecutionService {
         }
 
         Long executionId = idGenerator.nextId();
+        // The whole execution belongs to one trace. The id is stored on the execution row, so
+        // every message and every span of this execution can be collected under it.
+        String traceId = TraceContext.currentTraceId();
         WorkflowExecution execution = WorkflowExecution.builder()
                 .id(executionId)
                 .workflowId(version.getWorkflowId())
@@ -108,6 +112,7 @@ public class WorkflowExecutionService {
                 // The execution waits in the queue until the scheduler picks it up.
                 .status(WorkflowStatus.QUEUED.name())
                 .idempotencyKey(key)
+                .traceId(traceId)
                 .inputJson(JsonUtils.toJson(input == null ? Map.of() : input))
                 .currentNodeCount(0)
                 .completedNodeCount(0)
@@ -157,6 +162,7 @@ public class WorkflowExecutionService {
                         .input(input == null ? Map.of() : input)
                         .build());
         envelope.setWorkflowExecutionId(executionId);
+        envelope.setTraceId(traceId);
         outboxService.enqueue(MessageType.WORKFLOW_STARTED, "WORKFLOW", executionId, envelope);
 
         log.info("workflow execution created executionId={} workflowId={} nodes={}",

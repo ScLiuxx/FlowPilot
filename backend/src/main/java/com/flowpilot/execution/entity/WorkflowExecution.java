@@ -35,6 +35,14 @@ public class WorkflowExecution {
     /** The key of the caller, which makes a repeated start request idempotent. */
     private String idempotencyKey;
 
+    /**
+     * The trace of the execution.
+     *
+     * <p>Every message and every span of the execution carries this id, so the chain can be
+     * reconstructed across the Java service, RabbitMQ and the agent service.
+     */
+    private String traceId;
+
     private String inputJson;
     private String outputJson;
 

@@ -26,7 +26,7 @@ from app.messaging.events import (
 )
 from app.persistence.checkpoint import memory_checkpointer
 from app.persistence.repository import InMemoryExecutionRecordStore
-from app.runtime.context import IdempotencyJournal
+from app.runtime.context import InMemoryIdempotencyJournal
 from app.runtime.executor import AgentExecutor
 from app.runtime.registry import AgentGraphRegistry, register_default_graphs
 
@@ -106,8 +106,8 @@ def checkpointer():
 
 
 @pytest.fixture
-def journal() -> IdempotencyJournal:
-    return IdempotencyJournal()
+def journal() -> InMemoryIdempotencyJournal:
+    return InMemoryIdempotencyJournal()
 
 
 @pytest.fixture

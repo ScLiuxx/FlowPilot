@@ -11,6 +11,9 @@ Delivery rules:
 
 * messages are **persistent** and acknowledged **manually**,
 * the ACK is only sent after the business work succeeded,
+* the result event is *not* published by the consumer: it is written to the
+  transactional outbox together with the execution record and delivered by the
+  outbox publisher, therefore the ACK never loses a result,
 * a transient failure is requeued with a bounded attempt counter, an
   unrecoverable error is rejected into the dead letter queue (never an
   infinite requeue loop),
@@ -164,11 +167,10 @@ class AgentMessageConsumer:
             message_id=envelope.messageId,
         ):
             try:
-                outcome = await self._dispatch(envelope)
-                if outcome is not None and outcome.publish:
-                    await self._publisher.publish_outcome(
-                        envelope, outcome.message_type, outcome.payload
-                    )
+                await self._dispatch(envelope)
+                # The result event was written to the transactional outbox
+                # together with the execution record: the ACK therefore never
+                # loses a result.
                 await message.ack()
                 self._attempts.pop(message_id, None)
             except Exception as exc:

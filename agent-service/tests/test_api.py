@@ -62,6 +62,7 @@ def test_the_registry_contains_the_default_graphs():
     registry = register_default_graphs(AgentGraphRegistry())
     assert registry.agent_types() == [
         "DEPENDENCY_ANALYST",
+        "LLM",
         "REPORT_REVIEWER",
         "REPOSITORY_ANALYST",
     ]

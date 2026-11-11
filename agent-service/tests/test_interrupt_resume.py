@@ -96,7 +96,9 @@ async def test_the_side_effect_in_front_of_the_interrupt_is_idempotent(
         resume_envelope, AgentResumePayload.model_validate(resume_envelope.payload)
     )
 
-    approval_entries = [key for key in journal.entries() if key.startswith("approval-request:")]
+    approval_entries = [
+        key for key in await journal.entries() if key.startswith("approval-request:")
+    ]
     assert len(approval_entries) == 1, "the side effect must not be repeated"
 
 

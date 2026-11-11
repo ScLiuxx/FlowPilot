@@ -59,6 +59,11 @@
       "pattern": "^[0-9a-f]{32}$",
       "description": "OpenTelemetry compatible trace id."
     },
+    "spanId": {
+      "type": ["string", "null"],
+      "pattern": "^[0-9a-f]{16}$",
+      "description": "The span of the producer. The consumer continues the trace as its child."
+    },
     "timestamp": {
       "type": "string",
       "format": "date-time",
