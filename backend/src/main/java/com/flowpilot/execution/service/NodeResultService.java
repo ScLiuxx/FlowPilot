@@ -57,15 +57,20 @@ public class NodeResultService {
                     .id(idGenerator.nextId())
                     .nodeExecutionId(node.getId())
                     .attemptNo(attemptNo)
+                    .status(NodeStatus.RUNNING.name())
+                    .workerId(workerId)
+                    .leaseToken(leaseToken == null ? 0L : leaseToken)
+                    .startedAt(LocalDateTime.now())
                     .createdAt(LocalDateTime.now())
                     .build();
             attemptMapper.insert(attempt);
+        } else {
+            attempt.setStatus(NodeStatus.RUNNING.name());
+            attempt.setWorkerId(workerId);
+            attempt.setLeaseToken(leaseToken == null ? 0L : leaseToken);
+            attempt.setStartedAt(LocalDateTime.now());
+            attemptMapper.updateById(attempt);
         }
-        attempt.setStatus(NodeStatus.RUNNING.name());
-        attempt.setWorkerId(workerId);
-        attempt.setLeaseToken(leaseToken == null ? 0L : leaseToken);
-        attempt.setStartedAt(LocalDateTime.now());
-        attemptMapper.updateById(attempt);
 
         eventService.append(node.getWorkflowExecutionId(), node.getId(), EventType.NODE_STARTED,
                 Map.of("nodeKey", node.getNodeKey(), "nodeType", node.getNodeType(),
@@ -184,9 +189,12 @@ public class NodeResultService {
 
     /**
      * Moves the node into the human waiting state.
+     *
+     * <p>The attempt is closed, because the worker is done: it waits for a decision now. When the
+     * reviewer approves, the same attempt continues and ends as successful.
      */
     @Transactional
-    public boolean markWaitingHuman(Long nodeExecutionId, Integer attemptNo, Long leaseToken) {
+    public boolean markWaitingHuman(Long nodeExecutionId, Integer attemptNo) {
         int updated = nodeExecutionMapper.markWaitingHuman(nodeExecutionId, attemptNo);
         if (updated != 1) {
             return false;
@@ -194,8 +202,57 @@ public class NodeResultService {
         NodeExecution node = nodeExecutionMapper.selectById(nodeExecutionId);
         closeAttempt(node, attemptNo, NodeStatus.WAITING_HUMAN, null, null, null);
         eventService.append(node.getWorkflowExecutionId(), nodeExecutionId,
-                EventType.NODE_SUCCEEDED,
+                EventType.NODE_WAITING_HUMAN,
                 Map.of("nodeKey", node.getNodeKey(), "awaitingApproval", true), null);
+        return true;
+    }
+
+    /**
+     * Completes a node that waited for a human decision.
+     *
+     * <p>The attempt that was waiting for the decision is the attempt that finishes the node, so
+     * the attempt history stays complete.
+     */
+    @Transactional
+    public boolean completeFromHumanWait(Long nodeExecutionId, Map<String, Object> output) {
+        NodeExecution node = nodeExecutionMapper.selectById(nodeExecutionId);
+        if (node == null) {
+            return false;
+        }
+        String outputJson = JsonUtils.toJson(output == null ? Map.of() : output);
+        int updated = nodeExecutionMapper.completeFromHumanWait(nodeExecutionId, outputJson);
+        if (updated != 1) {
+            log.warn("the human node {} could not be completed", nodeExecutionId);
+            return false;
+        }
+        int attemptNo = node.getCurrentAttempt() == null ? 1 : node.getCurrentAttempt();
+        closeAttempt(node, attemptNo, NodeStatus.SUCCEEDED, outputJson, null, null);
+        eventService.append(node.getWorkflowExecutionId(), nodeExecutionId,
+                EventType.NODE_SUCCEEDED,
+                Map.of("nodeKey", node.getNodeKey(), "approved", true), null);
+        return true;
+    }
+
+    /**
+     * Fails a node that waited for a human decision, used when the reviewer rejected it.
+     */
+    @Transactional
+    public boolean failFromHumanWait(Long nodeExecutionId, String errorCode, String errorMessage) {
+        NodeExecution node = nodeExecutionMapper.selectById(nodeExecutionId);
+        if (node == null) {
+            return false;
+        }
+        int updated = nodeExecutionMapper.markFailedFromHumanWait(nodeExecutionId,
+                errorCode, errorMessage);
+        if (updated != 1) {
+            log.warn("the human node {} could not be rejected", nodeExecutionId);
+            return false;
+        }
+        int attemptNo = node.getCurrentAttempt() == null ? 1 : node.getCurrentAttempt();
+        closeAttempt(node, attemptNo, NodeStatus.FAILED, null, errorCode, errorMessage);
+        eventService.append(node.getWorkflowExecutionId(), nodeExecutionId,
+                EventType.NODE_FAILED,
+                Map.of("nodeKey", node.getNodeKey(), "errorCode", errorCode), null);
         return true;
     }
 

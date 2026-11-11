@@ -152,13 +152,15 @@ public class NodeWorker {
         Map<String, Object> config = definition == null ? Map.of() : definition.config();
         Map<String, Object> output = result == null ? Map.of() : result.getOutput();
 
-        int updated = nodeExecutionMapper.markWaitingHuman(node.getId(),
-                node.getCurrentAttempt() == null ? 1 : node.getCurrentAttempt());
-        if (updated != 1) {
+        int attemptNo = node.getCurrentAttempt() == null ? 1 : node.getCurrentAttempt();
+        boolean paused = resultService.markWaitingHuman(node.getId(), attemptNo);
+        if (!paused) {
             log.warn("the human node {} could not be put into the waiting state", node.getId());
             return;
         }
 
+        // The approval request also moves the workflow into the waiting state, because a workflow
+        // that waits for a reviewer is not a failure.
         approvalService.request(node.getWorkflowExecutionId(), node.getId(),
                 String.valueOf(config.getOrDefault("approvalType", "GENERIC")),
                 String.valueOf(output.getOrDefault("title",
@@ -167,20 +169,6 @@ public class NodeWorker {
                         config.getOrDefault("description", ""))),
                 output);
 
-        // The workflow itself pauses. A workflow that waits for a reviewer is not a failure.
-        WorkflowExecution execution = executionMapper.selectById(node.getWorkflowExecutionId());
-        if (execution != null) {
-            WorkflowStatus current = WorkflowStatus.valueOf(execution.getStatus());
-            if (WorkflowStatus.canTransition(current, WorkflowStatus.WAITING_HUMAN)) {
-                executionMapper.compareAndSetStatus(execution.getId(),
-                        current.name(),
-                        execution.getVersion(),
-                        WorkflowStatus.WAITING_HUMAN.name(),
-                        execution.getStartedAt(),
-                        execution.getFinishedAt(),
-                        null, null);
-            }
-        }
         log.info("the human node {} waits for a decision", node.getNodeKey());
     }
 

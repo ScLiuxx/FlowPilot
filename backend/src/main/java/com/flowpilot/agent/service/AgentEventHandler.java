@@ -2,6 +2,7 @@ package com.flowpilot.agent.service;
 
 import com.flowpilot.agent.entity.AgentInvocation;
 import com.flowpilot.agent.mapper.AgentInvocationMapper;
+import com.flowpilot.approval.service.ApprovalService;
 import com.flowpilot.execution.entity.NodeExecution;
 import com.flowpilot.execution.mapper.NodeExecutionMapper;
 import com.flowpilot.execution.model.EventType;
@@ -32,6 +33,7 @@ public class AgentEventHandler {
     private final AgentInvocationMapper invocationMapper;
     private final NodeExecutionMapper nodeExecutionMapper;
     private final NodeResultService nodeResultService;
+    private final ApprovalService approvalService;
     private final ExecutionEventService eventService;
 
     /**
@@ -124,6 +126,9 @@ public class AgentEventHandler {
 
     /**
      * The agent paused and waits for a human decision.
+     *
+     * <p>The approval request is created here, because the reviewer has to see the interruption in
+     * the console and decide on it. Without the request the workflow would wait forever.
      */
     @Transactional
     public void onInterrupted(AgentInterruptedPayload payload) {
@@ -147,7 +152,12 @@ public class AgentEventHandler {
         invocation.setCheckpointId(payload.getCheckpointId());
         invocationMapper.updateById(invocation);
 
-        nodeExecutionMapper.markWaitingHuman(node.getId(), invocation.getAttemptNo());
+        int attemptNo = invocation.getAttemptNo() == null ? 1 : invocation.getAttemptNo();
+        boolean paused = nodeResultService.markWaitingHuman(node.getId(), attemptNo);
+        if (!paused) {
+            log.warn("the agent node {} could not be put into the waiting state", node.getId());
+            return;
+        }
 
         Map<String, Object> interruptData = new java.util.LinkedHashMap<>();
         if (payload.getInterruptData() != null) {
@@ -165,6 +175,14 @@ public class AgentEventHandler {
 
         eventService.append(invocation.getWorkflowExecutionId(), node.getId(),
                 EventType.AGENT_INTERRUPTED, interruptData, null);
+
+        // The reviewer decides, so the workflow waits for a human from now on.
+        approvalService.request(invocation.getWorkflowExecutionId(), node.getId(),
+                "AGENT_INTERRUPT",
+                String.valueOf(interruptData.getOrDefault("title", "请确认 Agent 的分析结论")),
+                String.valueOf(interruptData.getOrDefault("description", "Agent 已暂停，等待人工确认。")),
+                interruptData);
+
         log.info("agent invocation {} interrupted, waiting for a human decision", invocation.getId());
     }
 

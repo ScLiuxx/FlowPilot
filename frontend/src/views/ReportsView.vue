@@ -4,7 +4,7 @@ import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { Download, Refresh } from '@element-plus/icons-vue'
 import { reportApi } from '@/api/client'
-import type { Report } from '@/api/types'
+import type { Id, Report } from '@/api/types'
 import PageHeader from '@/components/PageHeader.vue'
 import EmptyState from '@/components/EmptyState.vue'
 import ErrorState from '@/components/ErrorState.vue'
@@ -18,7 +18,7 @@ const list = ref<Report[]>([])
 const total = ref(0)
 const loading = ref(false)
 const error = ref('')
-const downloadingId = ref<number | null>(null)
+const downloadingId = ref<Id | null>(null)
 
 const query = reactive({
   page: 1,

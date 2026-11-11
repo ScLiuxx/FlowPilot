@@ -4,7 +4,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { ArrowLeft, CircleClose, Refresh, VideoPause } from '@element-plus/icons-vue'
 import { approvalApi } from '@/api/client'
-import type { Approval, ApprovalDecision } from '@/api/types'
+import type { Approval, ApprovalDecision, Id } from '@/api/types'
 import { useAuthStore } from '@/stores/auth'
 import { useExecutionStore } from '@/stores/executions'
 import PageHeader from '@/components/PageHeader.vue'
@@ -20,7 +20,7 @@ const router = useRouter()
 const auth = useAuthStore()
 const store = useExecutionStore()
 
-const executionId = computed(() => Number(route.params.id))
+const executionId = computed(() => String(route.params.id))
 
 const loading = ref(true)
 const error = ref('')
@@ -89,14 +89,14 @@ function syncStream(): void {
   store.connectStream(executionId.value, auth.token)
 }
 
-async function toggleNode(row: { nodeExecutionId: number }): Promise<void> {
+async function toggleNode(row: { nodeExecutionId: Id }): Promise<void> {
   if (!store.attemptsByNode[row.nodeExecutionId]) {
     await store.loadAttempts(executionId.value, row.nodeExecutionId)
   }
 }
 
 /** 展开节点行时按需加载该节点的重试记录 */
-async function onExpandChange(row: { nodeExecutionId: number }, expanded: boolean): Promise<void> {
+async function onExpandChange(row: { nodeExecutionId: Id }, expanded: boolean): Promise<void> {
   if (expanded) await toggleNode(row)
 }
 
@@ -283,7 +283,7 @@ onBeforeUnmount(() => {
               @expand-change="onExpandChange"
             >
               <el-table-column type="expand">
-                <template #default="{ row }: { row: { nodeExecutionId: number; nodeKey: string; status: string; attempt: number; maxAttempts: number; errorMessage?: string | null } }">
+                <template #default="{ row }: { row: { nodeExecutionId: Id; nodeKey: string; status: string; attempt: number; maxAttempts: number; errorMessage?: string | null } }">
                   <div class="fp-ed__attempts">
                     <div class="fp-row fp-row--between">
                       <span class="fp-label">重试记录</span>

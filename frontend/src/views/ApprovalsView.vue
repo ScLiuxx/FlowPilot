@@ -4,7 +4,7 @@ import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Refresh } from '@element-plus/icons-vue'
 import { approvalApi } from '@/api/client'
-import type { Approval, ApprovalDecision } from '@/api/types'
+import type { Approval, ApprovalDecision, Id } from '@/api/types'
 import PageHeader from '@/components/PageHeader.vue'
 import EmptyState from '@/components/EmptyState.vue'
 import ErrorState from '@/components/ErrorState.vue'
@@ -18,7 +18,7 @@ const list = ref<Approval[]>([])
 const total = ref(0)
 const loading = ref(false)
 const error = ref('')
-const decidingId = ref<number | null>(null)
+const decidingId = ref<Id | null>(null)
 
 const query = reactive({
   page: 1,

@@ -214,6 +214,47 @@ public interface NodeExecutionMapper extends BaseMapper<NodeExecution> {
     int releaseFromHumanWait(@Param("id") Long id);
 
     /**
+     * Puts a waiting node back into the running state.
+     *
+     * <p>This is the transition an agent node makes when the reviewer approved and the agent
+     * continues on the same thread. The attempt number and the fencing token stay the same, so
+     * the result the agent reports afterwards is accepted.
+     */
+    @Update("""
+            UPDATE node_execution
+               SET status = 'RUNNING',
+                   lease_expire_at = #{leaseExpireAt},
+                   version = version + 1,
+                   updated_at = CURRENT_TIMESTAMP(3)
+             WHERE id = #{id}
+               AND status = 'WAITING_HUMAN'
+            """)
+    int resumeRunningFromHumanWait(@Param("id") Long id,
+                                   @Param("leaseExpireAt") LocalDateTime leaseExpireAt);
+
+    /**
+     * Marks a node that waits for a human as failed, used when the reviewer rejected it.
+     *
+     * <p>The node is not running any more, so the lease and the attempt number of the running
+     * state do not apply here.
+     */
+    @Update("""
+            UPDATE node_execution
+               SET status = 'FAILED',
+                   error_code = #{errorCode},
+                   error_message = #{errorMessage},
+                   finished_at = CURRENT_TIMESTAMP(3),
+                   lease_expire_at = NULL,
+                   version = version + 1,
+                   updated_at = CURRENT_TIMESTAMP(3)
+             WHERE id = #{id}
+               AND status = 'WAITING_HUMAN'
+            """)
+    int markFailedFromHumanWait(@Param("id") Long id,
+                                 @Param("errorCode") String errorCode,
+                                 @Param("errorMessage") String errorMessage);
+
+    /**
      * Completes a node that waited for a human decision.
      */
     @Update("""
@@ -239,7 +280,7 @@ public interface NodeExecutionMapper extends BaseMapper<NodeExecution> {
                    version = version + 1,
                    updated_at = CURRENT_TIMESTAMP(3)
              WHERE id = #{id}
-               AND status IN ('PENDING', 'READY', 'RETRY_WAIT')
+               AND status IN ('PENDING', 'READY', 'RETRY_WAIT', 'WAITING_HUMAN')
             """)
     int cancel(@Param("id") Long id);
 

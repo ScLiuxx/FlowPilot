@@ -23,13 +23,22 @@ export interface PageResult<T> {
 /** 动态 JSON 对象（事件负载、输入输出等） */
 export type JsonObject = Record<string, unknown>
 
+/**
+ * 业务主键。
+ *
+ * 后端使用 64 位雪花 ID 生成主键，其数值超过 `Number.MAX_SAFE_INTEGER`，
+ * 因此在 JavaScript 中必须以字符串传递，否则会被静默四舍五入，导致
+ * 详情接口 404。所有主键字段统一使用该类型。
+ */
+export type Id = string
+
 /* ---------------------------------------------------------------- 认证 --- */
 
 /** 用户角色 */
 export type UserRole = 'USER' | 'ADMIN' | string
 
 export interface AuthUser {
-  id: number
+  id: Id
   username: string
   role: UserRole
   nickname?: string | null
@@ -95,13 +104,13 @@ export interface WorkflowDefinition {
 
 /** 工作流（列表 / 详情） */
 export interface Workflow {
-  id: number
+  id: Id
   name: string
   description?: string | null
   category?: string | null
   status?: WorkflowStatus
   latestVersion?: number
-  ownerId?: number
+  ownerId?: Id
   definition?: WorkflowDefinition | null
   createdAt?: string | null
   updatedAt?: string | null
@@ -121,13 +130,13 @@ export interface WorkflowUpdateRequest {
 }
 
 export interface WorkflowVersion {
-  id: number
-  workflowId: number
+  id: Id
+  workflowId: Id
   version: number
   status: WorkflowVersionStatus
   definitionHash?: string | null
   definition?: WorkflowDefinition | null
-  createdBy?: number | null
+  createdBy?: Id | null
   publishedAt?: string | null
   createdAt?: string | null
 }
@@ -137,7 +146,7 @@ export interface WorkflowVersionCreateRequest {
 }
 
 export interface WorkflowPublishRequest {
-  versionId: number
+  versionId: Id
 }
 
 /** DAG 校验结果 */
@@ -174,10 +183,10 @@ export type NodeExecutionStatus =
   | 'CANCELED'
 
 export interface Execution {
-  executionId: number
+  executionId: Id
   executionNo: string
-  workflowId: number
-  workflowVersionId: number
+  workflowId: Id
+  workflowVersionId: Id
   status: ExecutionStatus
   totalNodes: number
   completedNodes: number
@@ -192,7 +201,7 @@ export interface Execution {
 }
 
 export interface NodeExecution {
-  nodeExecutionId: number
+  nodeExecutionId: Id
   nodeKey: string
   nodeType: string
   status: NodeExecutionStatus
@@ -227,13 +236,13 @@ export interface ExecutionEvent {
 }
 
 export interface ExecutionStartRequest {
-  workflowVersionId?: number
+  workflowVersionId?: Id
   input?: JsonObject
   idempotencyKey?: string
 }
 
 export interface ExecutionStartResult {
-  executionId: number
+  executionId: Id
   executionNo: string
   status: ExecutionStatus
 }
@@ -243,7 +252,7 @@ export interface ExecutionCancelRequest {
 }
 
 export interface ExecutionCancelResult {
-  executionId: number
+  executionId: Id
   status: string
 }
 
@@ -253,9 +262,9 @@ export interface ExecutionCancelResult {
 export type ApprovalStatus = 'PENDING' | 'APPROVED' | 'REJECTED'
 
 export interface Approval {
-  approvalId: number
-  workflowExecutionId: number
-  nodeExecutionId?: number | null
+  approvalId: Id
+  workflowExecutionId: Id
+  nodeExecutionId?: Id | null
   approvalType: string
   status: ApprovalStatus
   title: string
@@ -264,7 +273,7 @@ export interface Approval {
   decisionData?: JsonObject | null
   requestedAt?: string | null
   decidedAt?: string | null
-  approverId?: number | null
+  approverId?: Id | null
   comment?: string | null
 }
 
@@ -276,7 +285,7 @@ export interface ApprovalDecisionRequest {
 }
 
 export interface ApprovalDecisionResult {
-  approvalId: number
+  approvalId: Id
   status: ApprovalStatus
 }
 
@@ -298,9 +307,9 @@ export interface ReportContent extends JsonObject {
 
 /** 报告 */
 export interface Report {
-  reportId: number
+  reportId: Id
   reportNo: string
-  workflowExecutionId: number
+  workflowExecutionId: Id
   title: string
   repositoryUrl?: string | null
   reportType: string

@@ -2,6 +2,11 @@ package com.flowpilot.execution.service;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
+import com.flowpilot.agent.entity.AgentInvocation;
+import com.flowpilot.agent.mapper.AgentInvocationMapper;
+import com.flowpilot.agent.service.AgentInvocationService;
+import com.flowpilot.approval.entity.ApprovalRecord;
+import com.flowpilot.approval.mapper.ApprovalRecordMapper;
 import com.flowpilot.common.exception.BizException;
 import com.flowpilot.common.id.SnowflakeIdGenerator;
 import com.flowpilot.common.result.ErrorCode;
@@ -30,6 +35,7 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 
@@ -50,6 +56,9 @@ public class WorkflowExecutionService {
 
     private final WorkflowExecutionMapper executionMapper;
     private final NodeExecutionMapper nodeExecutionMapper;
+    private final ApprovalRecordMapper approvalMapper;
+    private final AgentInvocationMapper invocationMapper;
+    private final AgentInvocationService invocationService;
     private final ExecutionEventService eventService;
     private final OutboxService outboxService;
     private final SnowflakeIdGenerator idGenerator;
@@ -179,6 +188,16 @@ public class WorkflowExecutionService {
         return nodeExecutionMapper.findStatesByWorkflowExecutionId(executionId);
     }
 
+    /**
+     * The node states of an execution including their outputs.
+     *
+     * <p>This is the variant that is used when the result of the workflow is assembled, because
+     * the output of a node carries the data the next node and the report need.
+     */
+    public List<NodeExecution> nodesWithOutput(Long executionId) {
+        return nodeExecutionMapper.findByWorkflowExecutionId(executionId);
+    }
+
     public NodeExecution node(Long executionId, String nodeKey) {
         NodeExecution node = nodeExecutionMapper.findByExecutionAndKey(executionId, nodeKey);
         if (node == null) {
@@ -210,9 +229,128 @@ public class WorkflowExecutionService {
         return policy.resolvedMaxAttempts();
     }
 
+    /**
+     * Builds the human readable number of an execution.
+     *
+     * <p>The suffix is derived from the snowflake id, so it is unique. Taking only the lowest six
+     * digits would collide as soon as two executions are created in the same second, so the whole
+     * id is folded into a wider number instead.
+     */
     private String buildExecutionNo(Long executionId) {
         return "FP-" + LocalDateTime.now().format(EXECUTION_NO_FORMAT) + "-"
-                + String.format("%06d", Math.abs(executionId % 1_000_000));
+                + String.format("%012d", Math.abs(executionId % 1_000_000_000_000L));
+    }
+
+    /**
+     * Requests the cancellation of an execution.
+     *
+     * <p>The cancellation is cooperative. The flag is set first, so the workers see it, and the
+     * nodes that have not started yet are cancelled right away. A running node finishes its
+     * current attempt and is then cancelled. The execution reaches the state {@code CANCELED} once
+     * no node is active any more.
+     */
+    @Transactional
+    public void cancel(Long executionId, String reason, Long operatorId) {
+        WorkflowExecution execution = get(executionId);
+        WorkflowStatus current = WorkflowStatus.valueOf(execution.getStatus());
+        if (current.isTerminal()) {
+            throw new BizException(ErrorCode.EX_ILLEGAL_STATE,
+                    "The execution already finished with the state " + current);
+        }
+
+        WorkflowExecution flag = new WorkflowExecution();
+        flag.setId(executionId);
+        flag.setCancelRequested(1);
+        flag.setCancelReason(reason);
+        executionMapper.updateById(flag);
+
+        // The nodes that have not started yet can be cancelled immediately.
+        List<String> cancelled = new ArrayList<>();
+        for (NodeExecution node : nodeExecutionMapper.findStatesByWorkflowExecutionId(executionId)) {
+            NodeStatus status = NodeStatus.valueOf(node.getStatus());
+            if (status == NodeStatus.PENDING || status == NodeStatus.READY
+                    || status == NodeStatus.RETRY_WAIT || status == NodeStatus.WAITING_HUMAN) {
+                nodeExecutionMapper.cancel(node.getId());
+                cancelled.add(node.getNodeKey());
+            }
+        }
+
+        // A pending approval is not worth waiting for any more.
+        cancelPendingApproval(executionId, reason);
+
+        // A running agent is asked to stop.
+        for (AgentInvocation invocation : invocationMapper.findByWorkflowExecutionId(executionId)) {
+            if (!AgentInvocation.STATUS_SUCCEEDED.equals(invocation.getStatus())
+                    && !AgentInvocation.STATUS_FAILED.equals(invocation.getStatus())) {
+                invocationService.cancel(invocation.getId(), reason);
+            }
+        }
+
+        eventService.append(executionId, null, EventType.WORKFLOW_CANCELED,
+                Map.of("reason", reason, "cancelledNodes", cancelled, "requestedBy", operatorId), operatorId);
+
+        // If nothing is running any more, the execution ends right away. A node that is still
+        // running finishes its attempt first, and the final state is reached when it reports back.
+        finalizeCancellation(executionId);
+
+        log.info("workflow execution cancellation requested executionId={} reason={} cancelled={}",
+                executionId, reason, cancelled);
+    }
+
+    /**
+     * Moves a cancelled execution into its final state.
+     *
+     * <p>The cancellation is cooperative, so the execution only ends when no node can make
+     * progress any more. This method is called when the cancellation is requested and again when
+     * a node reports its result, which covers both cases.
+     */
+    @Transactional
+    public void finalizeCancellation(Long executionId) {
+        WorkflowExecution execution = get(executionId);
+        if (execution.getCancelRequested() == null || execution.getCancelRequested() != 1) {
+            return;
+        }
+        if (WorkflowStatus.valueOf(execution.getStatus()).isTerminal()) {
+            return;
+        }
+        boolean anyActive = false;
+        for (NodeExecution node : nodeExecutionMapper.findStatesByWorkflowExecutionId(executionId)) {
+            NodeStatus status = NodeStatus.valueOf(node.getStatus());
+            if (status == NodeStatus.PENDING || status == NodeStatus.READY
+                    || status == NodeStatus.RUNNING || status == NodeStatus.RETRY_WAIT
+                    || status == NodeStatus.WAITING_HUMAN) {
+                anyActive = true;
+                break;
+            }
+        }
+        if (anyActive) {
+            return;
+        }
+        int updated = executionMapper.compareAndSetStatus(executionId,
+                execution.getStatus(),
+                execution.getVersion(),
+                WorkflowStatus.CANCELED.name(),
+                execution.getStartedAt(),
+                LocalDateTime.now(),
+                null,
+                execution.getCancelReason());
+        if (updated != 1) {
+            return;
+        }
+        log.info("workflow execution cancelled executionId={} reason={}",
+                executionId, execution.getCancelReason());
+    }
+
+    /**
+     * Cancels the approval that waits for a decision, because nobody is going to decide any more.
+     */
+    private void cancelPendingApproval(Long executionId, String reason) {
+        ApprovalRecord pending = approvalMapper.findPendingByExecution(executionId);
+        if (pending == null) {
+            return;
+        }
+        approvalMapper.decide(pending.getId(), ApprovalRecord.STATUS_CANCELED,
+                JsonUtils.toJson(Map.of("canceled", true)), reason, null);
     }
 
     /**

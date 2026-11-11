@@ -19,8 +19,8 @@ import com.flowpilot.execution.mapper.WorkflowExecutionMapper;
 import com.flowpilot.execution.model.EventType;
 import com.flowpilot.execution.model.WorkflowStatus;
 import com.flowpilot.execution.service.ExecutionEventService;
+import com.flowpilot.execution.service.NodeResultService;
 import com.flowpilot.execution.scheduler.WorkflowScheduler;
-import com.flowpilot.execution.service.WorkflowExecutionService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
@@ -51,8 +51,8 @@ public class ApprovalService {
     private final AgentInvocationMapper invocationMapper;
     private final AgentInvocationService invocationService;
     private final NodeExecutionMapper nodeExecutionMapper;
+    private final NodeResultService nodeResultService;
     private final WorkflowExecutionMapper executionMapper;
-    private final WorkflowExecutionService executionService;
     private final ExecutionEventService eventService;
     private final WorkflowScheduler scheduler;
     private final SnowflakeIdGenerator idGenerator;
@@ -178,13 +178,9 @@ public class ApprovalService {
         output.put("comment", comment);
         output.put("approvalId", approval.getId());
 
-        int updated = nodeExecutionMapper.completeFromHumanWait(node.getId(), JsonUtils.toJson(output));
-        if (updated != 1) {
-            log.warn("the human node {} could not be completed", node.getId());
+        if (!nodeResultService.completeFromHumanWait(node.getId(), output)) {
             return;
         }
-        eventService.append(approval.getWorkflowExecutionId(), node.getId(), EventType.NODE_SUCCEEDED,
-                Map.of("nodeKey", node.getNodeKey(), "approved", true), approval.getApproverId());
 
         // The workflow leaves the human waiting state before the successors are scheduled.
         resumeWorkflow(approval.getWorkflowExecutionId());
@@ -225,6 +221,15 @@ public class ApprovalService {
             nodeExecutionMapper.releaseFromHumanWait(approval.getNodeExecutionId());
             return;
         }
+        // The agent continues on the same thread, so the node returns to the running state. The
+        // attempt number and the fencing token stay the same, which is what lets the agent commit
+        // its result when it finishes.
+        int resumed = nodeExecutionMapper.resumeRunningFromHumanWait(approval.getNodeExecutionId(),
+                LocalDateTime.now().plusHours(2));
+        if (resumed != 1) {
+            log.warn("the agent node {} could not be resumed", approval.getNodeExecutionId());
+            return;
+        }
         // The resume request id is derived from the approval id, so a repeated decision can never
         // resume the agent twice.
         String resumeRequestId = "resume-" + approval.getId();
@@ -232,6 +237,9 @@ public class ApprovalService {
         resumeValue.put("approved", true);
         resumeValue.put("comment", comment);
         invocationService.resume(invocation.getId(), resumeRequestId, approval.getId(), resumeValue);
+
+        // The workflow leaves the human waiting state while the agent continues.
+        resumeWorkflow(approval.getWorkflowExecutionId());
     }
 
     /**
@@ -259,8 +267,11 @@ public class ApprovalService {
                     EventType.WORKFLOW_FAILED,
                     Map.of("reason", "APPROVAL_REJECTED", "approvalId", approval.getId()), null);
         }
-        nodeExecutionMapper.markFailed(approval.getNodeExecutionId(), 1, 0L,
-                "APPROVAL_REJECTED", comment == null ? "The reviewer rejected the result" : comment);
+        // The node that waited for the decision is failed as well, so the console shows why the
+        // workflow stopped.
+        nodeResultService.failFromHumanWait(approval.getNodeExecutionId(),
+                "APPROVAL_REJECTED",
+                comment == null ? "The reviewer rejected the result" : comment);
     }
 
     private AgentInvocation findInvocationForNode(Long nodeExecutionId) {
@@ -285,19 +296,6 @@ public class ApprovalService {
                 .orderByDesc(ApprovalRecord::getCreatedAt);
         Page<ApprovalRecord> result = approvalMapper.selectPage(new Page<>(page, size), query);
         return PageResult.of(result.getTotal(), page, size, result.getRecords());
-    }
-
-    /**
-     * Cancels the approvals of an execution, used when the execution is cancelled.
-     */
-    @Transactional
-    public void cancelForExecution(Long workflowExecutionId) {
-        ApprovalRecord pending = approvalMapper.findPendingByExecution(workflowExecutionId);
-        if (pending == null) {
-            return;
-        }
-        approvalMapper.decide(pending.getId(), ApprovalRecord.STATUS_CANCELED,
-                JsonUtils.toJson(Map.of("canceled", true)), "The execution was cancelled", null);
     }
 
     /**

@@ -9,6 +9,7 @@ import { ElMessage } from 'element-plus'
 import { pinia } from '@/stores'
 import { useAuthStore } from '@/stores/auth'
 import type {
+  Id,
   ApiEnvelope,
   Approval,
   ApprovalDecisionRequest,
@@ -179,24 +180,24 @@ export const authApi = {
 export const workflowApi = {
   list: (params?: { page?: number; size?: number; status?: string; keyword?: string }) =>
     request<PageResult<Workflow>>({ url: '/workflows', method: 'GET', params: toQuery(params) }),
-  detail: (workflowId: number) => request<Workflow>({ url: `/workflows/${workflowId}`, method: 'GET' }),
+  detail: (workflowId: Id) => request<Workflow>({ url: `/workflows/${workflowId}`, method: 'GET' }),
   create: (payload: WorkflowCreateRequest) =>
     request<Workflow>({ url: '/workflows', method: 'POST', data: payload }),
-  update: (workflowId: number, payload: WorkflowUpdateRequest) =>
+  update: (workflowId: Id, payload: WorkflowUpdateRequest) =>
     request<Workflow>({ url: `/workflows/${workflowId}`, method: 'PUT', data: payload }),
-  remove: (workflowId: number) => request<unknown>({ url: `/workflows/${workflowId}`, method: 'DELETE' }),
-  versions: (workflowId: number) =>
+  remove: (workflowId: Id) => request<unknown>({ url: `/workflows/${workflowId}`, method: 'DELETE' }),
+  versions: (workflowId: Id) =>
     request<WorkflowVersion[]>({ url: `/workflows/${workflowId}/versions`, method: 'GET' }),
-  version: (workflowId: number, versionId: number) =>
+  version: (workflowId: Id, versionId: Id) =>
     request<WorkflowVersion>({ url: `/workflows/${workflowId}/versions/${versionId}`, method: 'GET' }),
-  createVersion: (workflowId: number, payload: WorkflowVersionCreateRequest) =>
+  createVersion: (workflowId: Id, payload: WorkflowVersionCreateRequest) =>
     request<WorkflowVersion>({ url: `/workflows/${workflowId}/versions`, method: 'POST', data: payload }),
-  publish: (workflowId: number, payload: WorkflowPublishRequest) =>
+  publish: (workflowId: Id, payload: WorkflowPublishRequest) =>
     request<unknown>({ url: `/workflows/${workflowId}/publish`, method: 'POST', data: payload }),
   validate: (definition: WorkflowDefinition) =>
     request<DagValidationResult>({ url: '/workflows/validate', method: 'POST', data: { definition } }),
   /** 启动一次执行（异步运行，立即返回） */
-  startExecution: (workflowId: number, payload: ExecutionStartRequest) =>
+  startExecution: (workflowId: Id, payload: ExecutionStartRequest) =>
     request<ExecutionStartResult>({
       url: `/workflows/${workflowId}/executions`,
       method: 'POST',
@@ -208,23 +209,23 @@ export const workflowApi = {
  * 执行
  * ---------------------------------------------------------------------- */
 export const executionApi = {
-  list: (params?: { page?: number; size?: number; status?: string; workflowId?: number }) =>
+  list: (params?: { page?: number; size?: number; status?: string; workflowId?: Id }) =>
     request<PageResult<Execution>>({ url: '/executions', method: 'GET', params: toQuery(params) }),
-  detail: (executionId: number) => request<Execution>({ url: `/executions/${executionId}`, method: 'GET' }),
-  nodes: (executionId: number) =>
+  detail: (executionId: Id) => request<Execution>({ url: `/executions/${executionId}`, method: 'GET' }),
+  nodes: (executionId: Id) =>
     request<NodeExecution[]>({ url: `/executions/${executionId}/nodes`, method: 'GET' }),
-  attempts: (executionId: number, nodeExecutionId: number) =>
+  attempts: (executionId: Id, nodeExecutionId: Id) =>
     request<NodeAttempt[]>({
       url: `/executions/${executionId}/nodes/${nodeExecutionId}/attempts`,
       method: 'GET'
     }),
-  events: (executionId: number, params?: { afterSequence?: number; limit?: number }) =>
+  events: (executionId: Id, params?: { afterSequence?: number; limit?: number }) =>
     request<ExecutionEvent[]>({
       url: `/executions/${executionId}/events`,
       method: 'GET',
       params: toQuery(params)
     }),
-  cancel: (executionId: number, payload: ExecutionCancelRequest) =>
+  cancel: (executionId: Id, payload: ExecutionCancelRequest) =>
     request<ExecutionCancelResult>({
       url: `/executions/${executionId}/cancel`,
       method: 'POST',
@@ -238,8 +239,8 @@ export const executionApi = {
 export const approvalApi = {
   list: (params?: { page?: number; size?: number; status?: string }) =>
     request<PageResult<Approval>>({ url: '/approvals', method: 'GET', params: toQuery(params) }),
-  detail: (approvalId: number) => request<Approval>({ url: `/approvals/${approvalId}`, method: 'GET' }),
-  decide: (approvalId: number, payload: ApprovalDecisionRequest) =>
+  detail: (approvalId: Id) => request<Approval>({ url: `/approvals/${approvalId}`, method: 'GET' }),
+  decide: (approvalId: Id, payload: ApprovalDecisionRequest) =>
     request<ApprovalDecisionResult>({
       url: `/approvals/${approvalId}/decision`,
       method: 'POST',
@@ -253,9 +254,9 @@ export const approvalApi = {
 export const reportApi = {
   list: (params?: { page?: number; size?: number; status?: string }) =>
     request<PageResult<Report>>({ url: '/reports', method: 'GET', params: toQuery(params) }),
-  detail: (reportId: number) => request<Report>({ url: `/reports/${reportId}`, method: 'GET' }),
+  detail: (reportId: Id) => request<Report>({ url: `/reports/${reportId}`, method: 'GET' }),
   /** 下载 Markdown 原文（返回 text/markdown 附件，不走信封） */
-  download: (reportId: number) =>
+  download: (reportId: Id) =>
     request<Blob>({ url: `/reports/${reportId}/download`, method: 'GET', responseType: 'blob' })
 }
 

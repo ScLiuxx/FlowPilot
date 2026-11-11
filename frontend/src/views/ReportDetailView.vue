@@ -15,7 +15,7 @@ import { formatDateTime } from '@/utils/format'
 const route = useRoute()
 const router = useRouter()
 
-const reportId = computed(() => Number(route.params.id))
+const reportId = computed(() => String(route.params.id))
 
 const report = ref<Report | null>(null)
 const loading = ref(true)

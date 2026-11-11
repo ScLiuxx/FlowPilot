@@ -4,7 +4,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { ArrowLeft, CircleCheck, Promotion, VideoPlay } from '@element-plus/icons-vue'
 import { workflowApi } from '@/api/client'
-import type { DagValidationResult, Workflow, WorkflowDefinition, WorkflowVersion } from '@/api/types'
+import type { DagValidationResult, Id, Workflow, WorkflowDefinition, WorkflowVersion } from '@/api/types'
 import PageHeader from '@/components/PageHeader.vue'
 import StatusTag from '@/components/StatusTag.vue'
 import ErrorState from '@/components/ErrorState.vue'
@@ -16,7 +16,7 @@ import { formatDateTime } from '@/utils/format'
 const route = useRoute()
 const router = useRouter()
 
-const workflowId = computed(() => Number(route.params.id))
+const workflowId = computed(() => String(route.params.id))
 
 const workflow = ref<Workflow | null>(null)
 const versions = ref<WorkflowVersion[]>([])
@@ -24,8 +24,31 @@ const validation = ref<DagValidationResult | null>(null)
 const loading = ref(true)
 const error = ref('')
 const validating = ref(false)
-const publishing = ref<number | null>(null)
+const publishing = ref<Id | null>(null)
 const running = ref(false)
+
+// 运行对话框：工作流需要输入参数，例如技术尽调场景需要仓库地址。
+const runDialogVisible = ref(false)
+const runInput = ref('{\n  "repositoryUrl": ""\n}')
+const runInputError = ref('')
+
+const parsedRunInput = computed<Record<string, unknown>>(() => {
+  try {
+    const parsed = JSON.parse(runInput.value)
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {}
+  } catch {
+    return {}
+  }
+})
+
+const runInputValid = computed<boolean>(() => {
+  try {
+    const parsed = JSON.parse(runInput.value)
+    return parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed)
+  } catch {
+    return false
+  }
+})
 
 const definition = computed<WorkflowDefinition>(() => {
   if (workflow.value?.definition) return workflow.value.definition
@@ -85,19 +108,34 @@ async function publish(version: WorkflowVersion): Promise<void> {
   }
 }
 
-async function run(): Promise<void> {
+function openRunDialog(): void {
   const publishable = versions.value.find((version) => version.status === 'PUBLISHED')
   if (!publishable) {
     ElMessage.warning('请先发布一个版本后再运行')
+    return
+  }
+  runInputError.value = ''
+  runDialogVisible.value = true
+}
+
+async function confirmRun(): Promise<void> {
+  const publishable = versions.value.find((version) => version.status === 'PUBLISHED')
+  if (!publishable) {
+    ElMessage.warning('请先发布一个版本后再运行')
+    return
+  }
+  if (!runInputValid.value) {
+    runInputError.value = '输入必须是合法的 JSON 对象'
     return
   }
   running.value = true
   try {
     const result = await workflowApi.startExecution(workflowId.value, {
       workflowVersionId: publishable.id,
-      input: {}
+      input: parsedRunInput.value
     })
     ElMessage.success('执行已启动')
+    runDialogVisible.value = false
     await router.push({ name: 'execution-detail', params: { id: result.executionId } })
   } catch {
     // 错误提示由 api 拦截器统一处理
@@ -128,7 +166,7 @@ onMounted(load)
           :tone="workflowStatusMeta(workflow.status).tone"
         />
         <el-button :loading="validating" @click="validateDefinition">校验 DAG</el-button>
-        <el-button type="primary" :icon="VideoPlay" :loading="running" @click="run">
+        <el-button type="primary" :icon="VideoPlay" :loading="running" @click="openRunDialog">
           运行
         </el-button>
       </PageHeader>
@@ -311,6 +349,35 @@ onMounted(load)
         </div>
       </div>
     </template>
+
+    <!-- 运行对话框：工作流的输入参数，例如技术尽调场景的仓库地址 -->
+    <el-dialog
+      v-model="runDialogVisible"
+      title="运行工作流"
+      width="560px"
+      :close-on-click-modal="false"
+      append-to-body
+    >
+      <p class="fp-subtle fp-run__hint">
+        工作流的输入以 JSON 传入。技术尽调场景需要填写 <code>repositoryUrl</code>，
+        后端会校验它必须指向 github.com 上的公开仓库。
+      </p>
+      <el-input
+        v-model="runInput"
+        type="textarea"
+        :rows="8"
+        class="fp-mono"
+        spellcheck="false"
+        placeholder='{ "repositoryUrl": "https://github.com/owner/repo" }'
+      />
+      <p v-if="runInputError" class="fp-run__error">{{ runInputError }}</p>
+      <template #footer>
+        <el-button @click="runDialogVisible = false">取消</el-button>
+        <el-button type="primary" :loading="running" :disabled="!runInputValid" @click="confirmRun">
+          开始执行
+        </el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
@@ -318,6 +385,26 @@ onMounted(load)
 .fp-wfdetail__back {
   margin-bottom: var(--sp-2);
   margin-left: -8px;
+}
+
+.fp-run__hint {
+  margin: 0 0 var(--sp-3);
+  font-size: 12.5px;
+  line-height: 1.6;
+}
+
+.fp-run__hint code {
+  padding: 1px 5px;
+  border-radius: 4px;
+  background: var(--fp-surface-3);
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+}
+
+.fp-run__error {
+  margin: var(--sp-2) 0 0;
+  font-size: 12.5px;
+  color: var(--fp-danger);
 }
 
 .fp-wfdetail__meta {

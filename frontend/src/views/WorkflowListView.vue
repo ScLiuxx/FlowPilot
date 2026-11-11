@@ -4,7 +4,7 @@ import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Delete, Edit, Plus, Refresh, Search } from '@element-plus/icons-vue'
 import { workflowApi } from '@/api/client'
-import type { Workflow, WorkflowDefinition } from '@/api/types'
+import type { Id, Workflow, WorkflowDefinition } from '@/api/types'
 import PageHeader from '@/components/PageHeader.vue'
 import EmptyState from '@/components/EmptyState.vue'
 import ErrorState from '@/components/ErrorState.vue'
@@ -57,7 +57,7 @@ const dialogVisible = ref(false)
 const dialogMode = ref<'create' | 'edit'>('create')
 const submitting = ref(false)
 const formError = ref('')
-const editingId = ref<number | null>(null)
+const editingId = ref<Id | null>(null)
 const form = reactive({
   name: '',
   description: '',

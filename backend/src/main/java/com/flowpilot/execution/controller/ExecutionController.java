@@ -175,27 +175,11 @@ public class ExecutionController {
                                                         @RequestBody(required = false)
                                                         ExecutionDtos.CancelRequest request) {
         Long userId = CurrentUser.requireId();
-        WorkflowExecution execution = executionService.requireAccessible(executionId, userId,
-                CurrentUser.isAdmin());
+        executionService.requireAccessible(executionId, userId, CurrentUser.isAdmin());
         String reason = request == null || request.getReason() == null ? "USER_REQUEST" : request.getReason();
 
-        WorkflowStatus current = WorkflowStatus.valueOf(execution.getStatus());
-        if (current.isTerminal()) {
-            throw new BizException(ErrorCode.EX_ILLEGAL_STATE,
-                    "The execution already finished with the state " + current);
-        }
-        // The cancellation is cooperative: the flag is set first, the running nodes are cancelled
-        // once they report back.
-        WorkflowExecution update = new WorkflowExecution();
-        update.setId(executionId);
-        update.setCancelRequested(1);
-        update.setCancelReason(reason);
-        executionMapper.updateById(update);
+        executionService.cancel(executionId, reason, userId);
 
-        approvalService.cancelForExecution(executionId);
-        eventService.append(executionId, null, EventType.WORKFLOW_CANCELED,
-                Map.of("reason", reason, "requestedBy", userId), userId);
-        log.info("workflow execution cancellation requested executionId={} reason={}", executionId, reason);
         return Result.success(ExecutionDtos.CancelResponse.builder()
                 .executionId(executionId)
                 .status("CANCEL_REQUESTED")

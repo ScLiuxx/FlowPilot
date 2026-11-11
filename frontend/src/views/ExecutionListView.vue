@@ -33,7 +33,7 @@ async function load(): Promise<void> {
       page: query.page,
       size: query.size,
       status: query.status || undefined,
-      workflowId: query.workflowId ? Number(query.workflowId) : undefined
+      workflowId: query.workflowId ? String(query.workflowId) : undefined
     })
     list.value = page?.records ?? []
     total.value = page?.total ?? 0

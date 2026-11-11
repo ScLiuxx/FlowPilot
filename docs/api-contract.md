@@ -240,6 +240,17 @@ Body: `{ "reason": "USER_REQUEST" }`
 
 Response `data`: `{ "executionId": 10001, "status": "CANCEL_REQUESTED" }`
 
+### POST /api/v1/executions/{executionId}/report
+
+Generates the technical due diligence report of an execution. The report is created once, a
+repeated call returns the existing report.
+
+Response `data`:
+
+```json
+{ "reportId": 50001, "reportNo": "RPT-20261111-00001", "status": "PENDING_REVIEW", "title": "..." }
+```
+
 ## Approvals
 
 ### GET /api/v1/approvals
@@ -320,4 +331,12 @@ Query: `page`, `size`, `status`
   "totalTokenInput": 120000,
   "totalTokenOutput": 45000
 }
+```
+
+### GET /api/v1/monitoring/nodes
+
+The node execution counts grouped by status.
+
+```json
+{ "SUCCEEDED": 18, "FAILED": 2, "PENDING": 3, "RUNNING": 1 }
 ```

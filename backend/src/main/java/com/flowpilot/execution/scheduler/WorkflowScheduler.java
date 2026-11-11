@@ -283,13 +283,22 @@ public class WorkflowScheduler {
             switch (status) {
                 case PENDING, READY, RUNNING, RETRY_WAIT -> anyActive = true;
                 case WAITING_HUMAN -> anyWaitingHuman = true;
-                case FAILED, CANCELED -> {
+                // A cancelled node was stopped on purpose, so it is not a failure.
+                case FAILED -> {
                     failed++;
                     anyFailed = true;
                 }
+                case CANCELED -> completed++;
                 case SUCCEEDED, SKIPPED -> completed++;
                 default -> anyActive = true;
             }
+        }
+
+        // A cancelled execution ends as cancelled, never as failed. The nodes that were still
+        // running finish their current attempt first, so the cancellation is cooperative.
+        if (execution.getCancelRequested() != null && execution.getCancelRequested() == 1) {
+            executionService.finalizeCancellation(executionId);
+            return;
         }
 
         if (anyFailed) {
@@ -308,8 +317,9 @@ public class WorkflowScheduler {
     }
 
     private void succeedWorkflow(WorkflowExecution execution, List<NodeExecution> nodes) {
+        // The output of the workflow is the output of its nodes, so the payloads are needed here.
         Map<String, Object> output = new java.util.LinkedHashMap<>();
-        for (NodeExecution node : nodes) {
+        for (NodeExecution node : executionService.nodesWithOutput(execution.getId())) {
             if (node.getOutputJson() != null) {
                 output.put(node.getNodeKey(), JsonUtils.toMap(node.getOutputJson()));
             }

@@ -2,19 +2,19 @@ import { computed, ref } from 'vue'
 import { defineStore } from 'pinia'
 import { executionApi } from '@/api/client'
 import { SseClient, toExecutionEvent, type SseStatus } from '@/api/sse'
-import type { Execution, ExecutionEvent, NodeAttempt, NodeExecution } from '@/api/types'
+import type { Execution, ExecutionEvent, Id, NodeAttempt, NodeExecution } from '@/api/types'
 
 export const useExecutionStore = defineStore('executions', () => {
   const current = ref<Execution | null>(null)
   const nodes = ref<NodeExecution[]>([])
-  const attemptsByNode = ref<Record<number, NodeAttempt[]>>({})
+  const attemptsByNode = ref<Record<string, NodeAttempt[]>>({})
   const events = ref<ExecutionEvent[]>([])
   const streamStatus = ref<SseStatus>('idle')
   const loading = ref(false)
   const error = ref<string>('')
 
   let client: SseClient | null = null
-  let connectedExecutionId: number | null = null
+  let connectedExecutionId: Id | null = null
 
   const isStreaming = computed(() => streamStatus.value === 'open')
   const isReconnecting = computed(
@@ -31,7 +31,7 @@ export const useExecutionStore = defineStore('executions', () => {
     streamStatus.value = 'idle'
   }
 
-  async function loadDetail(executionId: number): Promise<Execution | null> {
+  async function loadDetail(executionId: Id): Promise<Execution | null> {
     loading.value = true
     error.value = ''
     try {
@@ -46,7 +46,7 @@ export const useExecutionStore = defineStore('executions', () => {
     }
   }
 
-  async function loadNodes(executionId: number): Promise<void> {
+  async function loadNodes(executionId: Id): Promise<void> {
     try {
       nodes.value = await executionApi.nodes(executionId)
     } catch {
@@ -54,7 +54,7 @@ export const useExecutionStore = defineStore('executions', () => {
     }
   }
 
-  async function loadAttempts(executionId: number, nodeExecutionId: number): Promise<void> {
+  async function loadAttempts(executionId: Id, nodeExecutionId: Id): Promise<void> {
     try {
       const list = await executionApi.attempts(executionId, nodeExecutionId)
       attemptsByNode.value = { ...attemptsByNode.value, [nodeExecutionId]: list }
@@ -64,12 +64,12 @@ export const useExecutionStore = defineStore('executions', () => {
   }
 
   /** 加载历史事件（按序号去重合并） */
-  async function loadHistory(executionId: number): Promise<void> {
+  async function loadHistory(executionId: Id): Promise<void> {
     await mergeEvents(executionId, 0)
   }
 
   /** 增量拉取指定序号之后的事件，用于断线续传后的补齐 */
-  async function mergeEvents(executionId: number, afterSequence: number): Promise<void> {
+  async function mergeEvents(executionId: Id, afterSequence: number): Promise<void> {
     try {
       const history = await executionApi.events(executionId, { afterSequence, limit: 200 })
       const known = new Set(events.value.map((event) => event.sequenceNo))
@@ -93,7 +93,7 @@ export const useExecutionStore = defineStore('executions', () => {
   }
 
   /** 建立 SSE 实时连接（同一执行重复调用时保持现有连接，避免重复订阅） */
-  function connectStream(executionId: number, token: string): void {
+  function connectStream(executionId: Id, token: string): void {
     if (client && connectedExecutionId === executionId) return
     disconnectStream()
     connectedExecutionId = executionId
@@ -128,7 +128,7 @@ export const useExecutionStore = defineStore('executions', () => {
     }
   }
 
-  async function cancel(executionId: number, reason = 'USER_REQUEST'): Promise<boolean> {
+  async function cancel(executionId: Id, reason = 'USER_REQUEST'): Promise<boolean> {
     try {
       await executionApi.cancel(executionId, { reason })
       await loadDetail(executionId)
