@@ -28,6 +28,17 @@ Every response (success or error) uses the same body:
 HTTP status codes still convey the HTTP-layer outcome (400 validation, 401 unauthenticated,
 403 forbidden, 404 not found, 409 conflict, 500 internal).
 
+## Identifiers
+
+Every identifier is a **string**. The identifiers are 64 bit snowflake ids, and a JavaScript
+number holds 53 bits exactly. An id that is sent as a number is rounded by the browser
+(`378902953627938816` becomes `378902953627938800`), and the detail pages then address a record
+that does not exist. The string form is the only representation a browser can use without losing
+precision.
+
+The message protocol is not affected: the identifiers inside the AMQP envelopes stay integers,
+because the protocol schema defines them as `integer/int64`.
+
 ## Authentication
 
 All endpoints except `POST /api/v1/auth/register`, `POST /api/v1/auth/login` and
@@ -43,7 +54,7 @@ Authorization: Bearer <jwt>
 { "username": "alice", "password": "secret123", "email": "a@b.c", "nickname": "Alice" }
 ```
 
-Response `data`: `{ "id": 1, "username": "alice", "role": "USER", "nickname": "Alice" }`
+Response `data`: `{ "id": "1001", "username": "alice", "role": "USER", "nickname": "Alice" }`
 
 ### POST /api/v1/auth/login
 
@@ -55,7 +66,7 @@ Response `data`: `{ "token": "<jwt>", "tokenType": "Bearer", "expiresIn": 7200, 
 
 ### GET /api/v1/auth/me
 
-Response `data`: `{ "id": 1, "username": "alice", "role": "USER", "nickname": "Alice", "email": "a@b.c" }`
+Response `data`: `{ "id": "1001", "username": "alice", "role": "USER", "nickname": "Alice", "email": "a@b.c" }`
 
 ## Workflows
 
@@ -90,11 +101,11 @@ Updates name/description/category only. Node changes require a new version.
 
 Creates a new draft version from a new definition. Body: `{ "definition": {...} }`
 
-Response `data`: `{ "id": 200, "workflowId": 100, "version": 2, "status": "DRAFT", "definitionHash": "..." }`
+Response `data`: `{ "id": "200", "workflowId": "100", "version": 2, "status": "DRAFT", "definitionHash": "..." }`
 
 ### POST /api/v1/workflows/{workflowId}/publish
 
-Body: `{ "versionId": 200 }` — validates the DAG then marks the version PUBLISHED.
+Body: `{ "versionId": "200" }` — validates the DAG then marks the version PUBLISHED.
 
 ### GET /api/v1/workflows/{workflowId}/versions
 
@@ -137,13 +148,13 @@ Node `type` is one of `HTTP`, `CODE`, `CONDITION`, `LLM`, `AGENT`, `HUMAN`, `MER
 ### POST /api/v1/workflows/{workflowId}/executions
 
 ```json
-{ "workflowVersionId": 101, "input": { "repositoryUrl": "https://github.com/example/project" }, "idempotencyKey": "key-001" }
+{ "workflowVersionId": "101", "input": { "repositoryUrl": "https://github.com/example/project" }, "idempotencyKey": "key-001" }
 ```
 
 Response `data`:
 
 ```json
-{ "executionId": 10001, "executionNo": "FP-20261111-00001", "status": "QUEUED" }
+{ "executionId": "10001", "executionNo": "FP-20261111-00001", "status": "QUEUED" }
 ```
 
 Returns immediately; the workflow runs asynchronously.
@@ -158,10 +169,10 @@ Response `data`:
 
 ```json
 {
-  "executionId": 10001,
+  "executionId": "10001",
   "executionNo": "FP-20261111-00001",
-  "workflowId": 100,
-  "workflowVersionId": 101,
+  "workflowId": "100",
+  "workflowVersionId": "101",
   "status": "RUNNING",
   "totalNodes": 6,
   "completedNodes": 2,
@@ -184,7 +195,7 @@ Status is one of `CREATED`, `QUEUED`, `RUNNING`, `WAITING_HUMAN`, `RETRY_WAIT`, 
 ```json
 [
   {
-    "nodeExecutionId": 20001,
+    "nodeExecutionId": "20001",
     "nodeKey": "collect_repository",
     "nodeType": "HTTP",
     "status": "SUCCEEDED",
@@ -238,7 +249,7 @@ Supports the `Last-Event-ID` request header (or `?lastEventId=`) to resume from 
 
 Body: `{ "reason": "USER_REQUEST" }`
 
-Response `data`: `{ "executionId": 10001, "status": "CANCEL_REQUESTED" }`
+Response `data`: `{ "executionId": "10001", "status": "CANCEL_REQUESTED" }`
 
 ### POST /api/v1/executions/{executionId}/report
 
@@ -248,7 +259,7 @@ repeated call returns the existing report.
 Response `data`:
 
 ```json
-{ "reportId": 50001, "reportNo": "RPT-20261111-00001", "status": "PENDING_REVIEW", "title": "..." }
+{ "reportId": "50001", "reportNo": "RPT-20261111-00001", "status": "PENDING_REVIEW", "title": "..." }
 ```
 
 ## Approvals
@@ -261,9 +272,9 @@ Query: `page`, `size`, `status` (default PENDING)
 
 ```json
 {
-  "approvalId": 40001,
+  "approvalId": "40001",
   "workflowExecutionId": 10001,
-  "nodeExecutionId": 20002,
+  "nodeExecutionId": "20002",
   "approvalType": "REPORT_REVIEW",
   "status": "PENDING",
   "title": "请审核技术尽调报告",
@@ -283,7 +294,7 @@ Body: `{ "decision": "APPROVED", "comment": "内容符合要求" }`
 
 `decision` is `APPROVED` or `REJECTED`. Submitting twice does not change the recorded decision.
 
-Response `data`: `{ "approvalId": 40001, "status": "APPROVED" }`
+Response `data`: `{ "approvalId": "40001", "status": "APPROVED" }`
 
 ## Reports
 
@@ -295,7 +306,7 @@ Query: `page`, `size`, `status`
 
 ```json
 {
-  "reportId": 50001,
+  "reportId": "50001",
   "reportNo": "RPT-20261111-00001",
   "workflowExecutionId": 10001,
   "title": "example/project 技术尽调报告",

@@ -6,6 +6,7 @@ import com.flowpilot.common.exception.BizException;
 import com.flowpilot.common.id.SnowflakeIdGenerator;
 import com.flowpilot.common.result.ErrorCode;
 import com.flowpilot.common.result.PageResult;
+import com.flowpilot.common.util.Ids;
 import com.flowpilot.common.util.JsonUtils;
 import com.flowpilot.execution.entity.NodeExecution;
 import com.flowpilot.execution.entity.WorkflowExecution;
@@ -97,7 +98,7 @@ public class ReportService {
         reportMapper.insert(report);
 
         eventService.append(workflowExecutionId, null, EventType.REPORT_GENERATED,
-                Map.of("reportId", report.getId(), "reportNo", report.getReportNo()), null);
+                Map.of("reportId", Ids.of(report.getId()), "reportNo", report.getReportNo()), null);
         log.info("report generated reportId={} executionId={}", report.getId(), workflowExecutionId);
         return report;
     }

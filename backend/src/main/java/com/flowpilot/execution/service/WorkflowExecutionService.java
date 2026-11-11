@@ -11,6 +11,7 @@ import com.flowpilot.common.exception.BizException;
 import com.flowpilot.common.id.SnowflakeIdGenerator;
 import com.flowpilot.common.result.ErrorCode;
 import com.flowpilot.common.result.PageResult;
+import com.flowpilot.common.util.Ids;
 import com.flowpilot.common.util.JsonUtils;
 import com.flowpilot.execution.entity.NodeExecution;
 import com.flowpilot.execution.entity.WorkflowExecution;
@@ -115,8 +116,8 @@ public class WorkflowExecutionService {
         executionMapper.updateById(execution);
 
         eventService.append(executionId, null, EventType.WORKFLOW_CREATED,
-                Map.of("workflowId", version.getWorkflowId(),
-                        "workflowVersionId", version.getId(),
+                Map.of("workflowId", Ids.of(version.getWorkflowId()),
+                        "workflowVersionId", Ids.of(version.getId()),
                         "totalNodes", nodeCount), userId);
 
         MessageEnvelope<WorkflowStartedPayload> envelope = MessageEnvelope.create(

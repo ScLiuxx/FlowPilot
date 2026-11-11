@@ -11,6 +11,7 @@ import com.flowpilot.common.exception.BizException;
 import com.flowpilot.common.id.SnowflakeIdGenerator;
 import com.flowpilot.common.result.ErrorCode;
 import com.flowpilot.common.result.PageResult;
+import com.flowpilot.common.util.Ids;
 import com.flowpilot.common.util.JsonUtils;
 import com.flowpilot.execution.entity.NodeExecution;
 import com.flowpilot.execution.entity.WorkflowExecution;
@@ -96,7 +97,7 @@ public class ApprovalService {
         }
 
         eventService.append(workflowExecutionId, nodeExecutionId, EventType.APPROVAL_REQUESTED,
-                Map.of("approvalId", record.getId(),
+                Map.of("approvalId", Ids.of(record.getId()),
                         "approvalType", record.getApprovalType(),
                         "title", title == null ? "" : title), null);
         log.info("approval requested approvalId={} executionId={}", record.getId(), workflowExecutionId);
@@ -137,7 +138,7 @@ public class ApprovalService {
 
         eventService.append(approval.getWorkflowExecutionId(), approval.getNodeExecutionId(),
                 EventType.APPROVAL_SUBMITTED,
-                Map.of("approvalId", approvalId, "decision", status), approverId);
+                Map.of("approvalId", Ids.of(approvalId), "decision", status), approverId);
 
         if (ApprovalRecord.STATUS_APPROVED.equals(status)) {
             resume(approval, comment);
@@ -176,7 +177,7 @@ public class ApprovalService {
         Map<String, Object> output = new LinkedHashMap<>();
         output.put("approved", true);
         output.put("comment", comment);
-        output.put("approvalId", approval.getId());
+        output.put("approvalId", Ids.of(approval.getId()));
 
         if (!nodeResultService.completeFromHumanWait(node.getId(), output)) {
             return;
@@ -265,7 +266,7 @@ public class ApprovalService {
                     comment == null ? "The reviewer rejected the result" : comment);
             eventService.append(execution.getId(), approval.getNodeExecutionId(),
                     EventType.WORKFLOW_FAILED,
-                    Map.of("reason", "APPROVAL_REJECTED", "approvalId", approval.getId()), null);
+                    Map.of("reason", "APPROVAL_REJECTED", "approvalId", Ids.of(approval.getId())), null);
         }
         // The node that waited for the decision is failed as well, so the console shows why the
         // workflow stopped.
