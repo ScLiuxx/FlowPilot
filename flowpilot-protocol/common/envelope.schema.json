@@ -1,0 +1,70 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://flowpilot.io/protocol/common/envelope.schema.json",
+  "title": "MessageEnvelope",
+  "description": "Uniform AMQP message envelope shared by the Java backend and the Python agent service.",
+  "type": "object",
+  "required": [
+    "schemaVersion",
+    "messageId",
+    "messageType",
+    "correlationId",
+    "workflowExecutionId",
+    "traceId",
+    "timestamp",
+    "producer",
+    "payload"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "schemaVersion": {
+      "type": "string",
+      "pattern": "^\\d+\\.\\d+$",
+      "description": "Protocol version. Consumers must reject unsupported major versions."
+    },
+    "messageId": {
+      "type": "string",
+      "format": "uuid",
+      "description": "Unique message identifier, used for message-level deduplication."
+    },
+    "messageType": {
+      "type": "string",
+      "enum": [
+        "WorkflowStarted",
+        "NodeExecute",
+        "NodeCompleted",
+        "NodeFailed",
+        "AgentExecute",
+        "AgentResume",
+        "AgentCancel",
+        "AgentCompleted",
+        "AgentFailed",
+        "AgentInterrupted"
+      ]
+    },
+    "correlationId": {
+      "type": "string",
+      "description": "Groups all messages produced by one logical business operation."
+    },
+    "causationId": {
+      "type": ["string", "null"],
+      "description": "messageId of the direct upstream message that caused this one."
+    },
+    "workflowExecutionId": { "type": "integer", "format": "int64" },
+    "nodeExecutionId": { "type": ["integer", "null"], "format": "int64" },
+    "attemptNo": { "type": ["integer", "null"], "format": "int32" },
+    "invocationId": { "type": ["integer", "null"], "format": "int64" },
+    "traceId": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{32}$",
+      "description": "OpenTelemetry compatible trace id."
+    },
+    "timestamp": {
+      "type": "string",
+      "format": "date-time",
+      "description": "ISO-8601 UTC creation time with millisecond precision."
+    },
+    "producer": { "type": "string", "description": "Service name that produced the message." },
+    "payload": { "type": "object" }
+  }
+}

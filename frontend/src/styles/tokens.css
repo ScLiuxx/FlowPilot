@@ -1,0 +1,116 @@
+/* ==========================================================================
+   FlowPilot 设计令牌 (Design tokens)
+   一个强调色 + 中性灰阶，支持浅色 / 深色两套主题。
+   ========================================================================== */
+
+:root {
+  color-scheme: light;
+
+  /* 表面与背景 */
+  --fp-bg: #f4f6f9;
+  --fp-bg-grad: radial-gradient(1200px 500px at 12% -10%, rgba(76, 110, 245, 0.08), transparent 60%),
+    radial-gradient(900px 420px at 100% 0%, rgba(76, 110, 245, 0.05), transparent 55%);
+  --fp-surface: #ffffff;
+  --fp-surface-2: #fafbfc;
+  --fp-surface-3: #f0f2f5;
+  --fp-overlay: rgba(22, 24, 29, 0.45);
+
+  /* 描边 */
+  --fp-border: #e5e8ee;
+  --fp-border-strong: #d5dae3;
+
+  /* 文本 */
+  --fp-text: #15181d;
+  --fp-text-muted: #5f6673;
+  --fp-text-subtle: #8a91a0;
+
+  /* 唯一强调色 */
+  --fp-accent: #4c6ef5;
+  --fp-accent-hover: #4263eb;
+  --fp-accent-soft: rgba(76, 110, 245, 0.1);
+  --fp-accent-border: rgba(76, 110, 245, 0.28);
+  --fp-on-accent: #ffffff;
+
+  /* 语义色（仅用于状态标识，不作为装饰色） */
+  --fp-success: #2b8a3e;
+  --fp-success-soft: rgba(43, 138, 62, 0.12);
+  --fp-warning: #b76e00;
+  --fp-warning-soft: rgba(183, 110, 0, 0.13);
+  --fp-danger: #d93838;
+  --fp-danger-soft: rgba(217, 56, 56, 0.12);
+  --fp-info: #1971c2;
+  --fp-info-soft: rgba(25, 113, 194, 0.12);
+  --fp-neutral-soft: rgba(95, 102, 115, 0.12);
+
+  /* 圆角 */
+  --fp-radius-sm: 6px;
+  --fp-radius: 10px;
+  --fp-radius-lg: 14px;
+  --fp-pill: 999px;
+
+  /* 间距刻度 */
+  --sp-1: 4px;
+  --sp-2: 8px;
+  --sp-3: 12px;
+  --sp-4: 16px;
+  --sp-5: 20px;
+  --sp-6: 24px;
+  --sp-7: 32px;
+  --sp-8: 40px;
+
+  /* 阴影 */
+  --fp-shadow-1: 0 1px 2px rgba(16, 24, 40, 0.06), 0 1px 3px rgba(16, 24, 40, 0.08);
+  --fp-shadow-2: 0 6px 20px rgba(16, 24, 40, 0.1);
+
+  /* 布局 */
+  --sidebar-w: 236px;
+  --topbar-h: 58px;
+  --content-max: 1400px;
+
+  /* 字体 */
+  --font-sans: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
+    "Hiragino Sans GB", "Microsoft YaHei", "Helvetica Neue", Arial, sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono",
+    monospace;
+
+  /* 动效 */
+  --ease: cubic-bezier(0.22, 0.61, 0.36, 1);
+}
+
+html[data-theme="dark"] {
+  color-scheme: dark;
+
+  --fp-bg: #0e1116;
+  --fp-bg-grad: radial-gradient(1100px 460px at 10% -10%, rgba(116, 143, 252, 0.1), transparent 60%),
+    radial-gradient(900px 400px at 100% 0%, rgba(116, 143, 252, 0.06), transparent 55%);
+  --fp-surface: #151920;
+  --fp-surface-2: #191e26;
+  --fp-surface-3: #202631;
+  --fp-overlay: rgba(0, 0, 0, 0.6);
+
+  --fp-border: #262c36;
+  --fp-border-strong: #333b47;
+
+  --fp-text: #e8ebf0;
+  --fp-text-muted: #9aa3b2;
+  --fp-text-subtle: #6f7887;
+
+  --fp-accent: #748ffc;
+  --fp-accent-hover: #91a7ff;
+  --fp-accent-soft: rgba(116, 143, 252, 0.16);
+  --fp-accent-border: rgba(116, 143, 252, 0.4);
+  --fp-on-accent: #0e1116;
+
+  --fp-success: #51cf66;
+  --fp-success-soft: rgba(81, 207, 102, 0.16);
+  --fp-warning: #ffc078;
+  --fp-warning-soft: rgba(255, 192, 120, 0.16);
+  --fp-danger: #ff8787;
+  --fp-danger-soft: rgba(255, 135, 135, 0.16);
+  --fp-info: #74c0fc;
+  --fp-info-soft: rgba(116, 192, 252, 0.16);
+  --fp-neutral-soft: rgba(154, 163, 178, 0.16);
+
+  --fp-shadow-1: 0 1px 2px rgba(0, 0, 0, 0.4);
+  --fp-shadow-2: 0 8px 26px rgba(0, 0, 0, 0.45);
+}

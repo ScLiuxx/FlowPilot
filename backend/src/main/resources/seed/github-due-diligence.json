@@ -1,0 +1,78 @@
+{
+  "workflowId": "github-due-diligence",
+  "name": "GitHub 技术尽调",
+  "description": "采集开源项目的基本信息、提交、Issue、Pull Request 与发布数据，生成结构化技术尽调报告",
+  "nodes": [
+    {
+      "id": "collect_repository",
+      "name": "采集仓库信息",
+      "type": "HTTP",
+      "dependencies": [],
+      "config": { "operation": "get_repository" },
+      "retryPolicy": { "maxAttempts": 3, "initialDelaySeconds": 2, "maxDelaySeconds": 30, "multiplier": 2.0 },
+      "timeoutPolicy": { "timeoutSeconds": 30 }
+    },
+    {
+      "id": "collect_commits",
+      "name": "采集提交记录",
+      "type": "HTTP",
+      "dependencies": ["collect_repository"],
+      "config": { "operation": "get_commits" },
+      "retryPolicy": { "maxAttempts": 3, "initialDelaySeconds": 2, "maxDelaySeconds": 30, "multiplier": 2.0 },
+      "timeoutPolicy": { "timeoutSeconds": 30 }
+    },
+    {
+      "id": "collect_issues",
+      "name": "采集 Issue 与 Pull Request",
+      "type": "HTTP",
+      "dependencies": ["collect_repository"],
+      "config": { "operation": "get_issues" },
+      "retryPolicy": { "maxAttempts": 3, "initialDelaySeconds": 2, "maxDelaySeconds": 30, "multiplier": 2.0 },
+      "timeoutPolicy": { "timeoutSeconds": 30 }
+    },
+    {
+      "id": "collect_releases",
+      "name": "采集发布记录",
+      "type": "HTTP",
+      "dependencies": ["collect_repository"],
+      "config": { "operation": "get_releases" },
+      "retryPolicy": { "maxAttempts": 3, "initialDelaySeconds": 2, "maxDelaySeconds": 30, "multiplier": 2.0 },
+      "timeoutPolicy": { "timeoutSeconds": 30 }
+    },
+    {
+      "id": "compute_metrics",
+      "name": "汇总统计数据",
+      "type": "CODE",
+      "dependencies": ["collect_repository", "collect_commits", "collect_issues", "collect_releases"],
+      "config": { "operation": "all_metrics" },
+      "retryPolicy": { "maxAttempts": 2, "initialDelaySeconds": 1, "maxDelaySeconds": 10, "multiplier": 2.0 },
+      "timeoutPolicy": { "timeoutSeconds": 30 }
+    },
+    {
+      "id": "analyze_repository",
+      "name": "智能分析",
+      "type": "AGENT",
+      "dependencies": ["compute_metrics"],
+      "config": {
+        "agentType": "REPOSITORY_ANALYST",
+        "maxIterations": 10,
+        "maxToolCalls": 20,
+        "timeoutSeconds": 300
+      },
+      "retryPolicy": { "maxAttempts": 2, "initialDelaySeconds": 5, "maxDelaySeconds": 60, "multiplier": 2.0 },
+      "timeoutPolicy": { "timeoutSeconds": 300 }
+    },
+    {
+      "id": "human_review",
+      "name": "人工审核",
+      "type": "HUMAN",
+      "dependencies": ["analyze_repository"],
+      "config": {
+        "approvalType": "REPORT_REVIEW",
+        "title": "请审核技术尽调结论",
+        "description": "Agent 已完成初步分析，请确认结论是否需要调整。"
+      },
+      "timeoutPolicy": { "timeoutSeconds": 3600 }
+    }
+  ]
+}

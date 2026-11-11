@@ -1,0 +1,135 @@
+server:
+  port: ${SERVER_PORT:8080}
+  shutdown: graceful
+  tomcat:
+    threads:
+      max: 200
+
+spring:
+  application:
+    name: flowpilot-backend
+  lifecycle:
+    timeout-per-shutdown-phase: 30s
+  datasource:
+    url: jdbc:mysql://${MYSQL_HOST:localhost}:${MYSQL_PORT:3306}/${MYSQL_DATABASE:flowpilot}?useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=UTC&characterEncoding=utf8&rewriteBatchedStatements=true
+    username: ${MYSQL_USERNAME:flowpilot}
+    password: ${MYSQL_PASSWORD:flowpilot}
+    driver-class-name: com.mysql.cj.jdbc.Driver
+    hikari:
+      maximum-pool-size: 20
+      minimum-idle: 5
+      connection-timeout: 10000
+      idle-timeout: 300000
+      max-lifetime: 1200000
+  data:
+    redis:
+      host: ${REDIS_HOST:localhost}
+      port: ${REDIS_PORT:6379}
+      password: ${REDIS_PASSWORD:}
+      database: 0
+      timeout: 5000ms
+      lettuce:
+        pool:
+          max-active: 16
+          max-idle: 8
+          min-idle: 2
+  rabbitmq:
+    host: ${RABBITMQ_HOST:localhost}
+    port: ${RABBITMQ_PORT:5672}
+    username: ${RABBITMQ_USERNAME:flowpilot}
+    password: ${RABBITMQ_PASSWORD:flowpilot}
+    virtual-host: ${RABBITMQ_VHOST:/}
+    publisher-confirm-type: correlated
+    publisher-returns: true
+    template:
+      mandatory: true
+    listener:
+      simple:
+        acknowledge-mode: manual
+        prefetch: 10
+        concurrency: 2
+        max-concurrency: 8
+        default-requeue-rejected: false
+  jackson:
+    default-property-inclusion: always
+    time-zone: UTC
+    serialization:
+      write-dates-as-timestamps: false
+  flyway:
+    enabled: true
+    locations: classpath:db/migration
+    baseline-on-migrate: true
+    validate-on-migrate: true
+  mvc:
+    async:
+      request-timeout: 1800000
+
+mybatis-plus:
+  configuration:
+    map-underscore-to-camel-case: true
+    default-enum-type-handler: org.apache.ibatis.type.EnumTypeHandler
+  global-config:
+    banner: false
+    db-config:
+      id-type: input
+      logic-delete-field: null
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics,prometheus
+  endpoint:
+    health:
+      show-details: when-authorized
+  tracing:
+    sampling:
+      probability: 1.0
+
+springdoc:
+  api-docs:
+    path: /v3/api-docs
+  swagger-ui:
+    path: /swagger-ui.html
+    operations-sorter: method
+
+flowpilot:
+  security:
+    jwt:
+      # Override in every real deployment. The value below is the development default.
+      secret: ${JWT_SECRET:flowpilot-development-secret-key-change-me-in-production-000}
+      expiration-seconds: 7200
+  worker:
+    id: ${WORKER_ID:worker-01}
+    max-concurrency: 8
+    lease-seconds: 60
+  recovery:
+    enabled: true
+    interval-ms: 15000
+    batch-size: 50
+  retry:
+    enabled: true
+    interval-ms: 5000
+    batch-size: 50
+  messaging:
+    outbox:
+      enabled: true
+      poll-interval-ms: 500
+      stale-scan-interval-ms: 60000
+      batch-size: 100
+  agent:
+    service-url: ${AGENT_SERVICE_URL:http://localhost:8000}
+    max-execution-seconds: 900
+  github:
+    # The token raises the API rate limit. Without it the public limit applies.
+    token: ${GITHUB_TOKEN:}
+  report:
+    storage-dir: ${REPORT_STORAGE_DIR:/tmp/flowpilot/reports}
+
+logging:
+  pattern:
+    console: "%d{yyyy-MM-dd HH:mm:ss.SSS} %-5level [%X{traceId:-}] %logger{36} - %msg%n"
+  level:
+    root: INFO
+    com.flowpilot: INFO
+    org.springframework.amqp: WARN

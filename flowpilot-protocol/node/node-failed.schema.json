@@ -1,0 +1,15 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://flowpilot.io/protocol/node/node-failed.schema.json",
+  "title": "NodeFailedPayload",
+  "type": "object",
+  "required": ["nodeKey", "errorCode", "errorCategory", "errorMessage", "retryable"],
+  "properties": {
+    "nodeKey": { "type": "string" },
+    "errorCode": { "type": "string" },
+    "errorCategory": { "type": "string", "enum": ["TRANSIENT", "RATE_LIMIT", "VALIDATION", "PERMISSION", "BUSINESS", "INTERNAL"] },
+    "errorMessage": { "type": "string" },
+    "retryable": { "type": "boolean" },
+    "diagnostics": { "type": ["object", "null"] }
+  }
+}

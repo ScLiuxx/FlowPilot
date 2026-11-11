@@ -1,0 +1,13 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://flowpilot.io/protocol/agent/agent-cancel.schema.json",
+  "title": "AgentCancelPayload",
+  "type": "object",
+  "required": ["invocationId", "threadId"],
+  "properties": {
+    "invocationId": { "type": "integer", "format": "int64" },
+    "threadId": { "type": "string" },
+    "cancelRequestId": { "type": "string" },
+    "cancelReason": { "type": "string" }
+  }
+}

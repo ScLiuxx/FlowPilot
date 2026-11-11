@@ -1,0 +1,19 @@
+# Profile of the API instances.
+#
+# The API and the worker share the same jar. The API instance serves the console and keeps the
+# consumer concurrency low, so the node execution load can be scaled on the worker instances.
+spring:
+  rabbitmq:
+    listener:
+      simple:
+        concurrency: 1
+        max-concurrency: 4
+
+flowpilot:
+  worker:
+    id: ${WORKER_ID:api-01}
+    max-concurrency: 4
+
+logging:
+  level:
+    com.flowpilot: INFO

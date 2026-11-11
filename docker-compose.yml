@@ -1,0 +1,175 @@
+name: flowpilot
+
+# FlowPilot runs as a modular monolith plus a separate Agent Runtime.
+#
+# The API and the worker use the same jar and differ only in the Spring profile, so the node
+# execution capacity can be scaled independently of the HTTP layer.
+
+services:
+  mysql:
+    image: mysql:8.0
+    container_name: flowpilot-mysql
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-flowpilot-root}
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-flowpilot}
+      MYSQL_USER: ${MYSQL_USERNAME:-flowpilot}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-flowpilot}
+      TZ: UTC
+    command:
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_unicode_ci
+      - --default-time-zone=+00:00
+    ports:
+      - "3306:3306"
+    volumes:
+      - mysql-data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-p${MYSQL_ROOT_PASSWORD:-flowpilot-root}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    networks: [flowpilot]
+
+  redis:
+    image: redis:7-alpine
+    container_name: flowpilot-redis
+    command: ["redis-server", "--appendonly", "yes"]
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+    networks: [flowpilot]
+
+  rabbitmq:
+    image: rabbitmq:3.13-management-alpine
+    container_name: flowpilot-rabbitmq
+    environment:
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USERNAME:-flowpilot}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD:-flowpilot}
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+    volumes:
+      - rabbitmq-data:/var/lib/rabbitmq
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 15s
+      timeout: 10s
+      retries: 10
+    networks: [flowpilot]
+
+  postgres:
+    image: postgres:16-alpine
+    container_name: flowpilot-postgres
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-flowpilot}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-flowpilot}
+      POSTGRES_DB: ${POSTGRES_DATABASE:-flowpilot_agent}
+      TZ: UTC
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-flowpilot}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    networks: [flowpilot]
+
+  backend-api:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: flowpilot-backend-api
+    environment:
+      SPRING_PROFILES_ACTIVE: api
+      MYSQL_HOST: mysql
+      REDIS_HOST: redis
+      RABBITMQ_HOST: rabbitmq
+      JWT_SECRET: ${JWT_SECRET:-flowpilot-development-secret-key-change-me-in-production-000}
+      WORKER_ID: api-01
+    ports:
+      - "8080:8080"
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    networks: [flowpilot]
+
+  backend-worker:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: flowpilot-backend-worker
+    environment:
+      SPRING_PROFILES_ACTIVE: worker
+      MYSQL_HOST: mysql
+      REDIS_HOST: redis
+      RABBITMQ_HOST: rabbitmq
+      JWT_SECRET: ${JWT_SECRET:-flowpilot-development-secret-key-change-me-in-production-000}
+      WORKER_ID: worker-01
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    deploy:
+      replicas: 2
+    networks: [flowpilot]
+
+  agent-worker:
+    build:
+      context: .
+      dockerfile: agent-service/Dockerfile
+    container_name: flowpilot-agent-worker
+    environment:
+      RABBITMQ_HOST: rabbitmq
+      RABBITMQ_PORT: 5672
+      RABBITMQ_USERNAME: ${RABBITMQ_USERNAME:-flowpilot}
+      RABBITMQ_PASSWORD: ${RABBITMQ_PASSWORD:-flowpilot}
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_USER: ${POSTGRES_USER:-flowpilot}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-flowpilot}
+      POSTGRES_DB: ${POSTGRES_DATABASE:-flowpilot_agent}
+      GITHUB_TOKEN: ${GITHUB_TOKEN:-}
+      LLM_API_KEY: ${LLM_API_KEY:-}
+      LLM_MODEL: ${LLM_MODEL:-gpt-4o-mini}
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    networks: [flowpilot]
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: flowpilot-frontend
+    ports:
+      - "5173:80"
+    depends_on:
+      - backend-api
+    networks: [flowpilot]
+
+volumes:
+  mysql-data:
+  redis-data:
+  rabbitmq-data:
+  postgres-data:
+
+networks:
+  flowpilot:
+    driver: bridge

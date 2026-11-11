@@ -1,0 +1,183 @@
+package com.flowpilot.agent.service;
+
+import com.flowpilot.agent.entity.AgentInvocation;
+import com.flowpilot.agent.mapper.AgentInvocationMapper;
+import com.flowpilot.execution.entity.NodeExecution;
+import com.flowpilot.execution.mapper.NodeExecutionMapper;
+import com.flowpilot.execution.model.EventType;
+import com.flowpilot.execution.service.ExecutionEventService;
+import com.flowpilot.execution.service.NodeResultService;
+import com.flowpilot.messaging.protocol.payloads.AgentCompletedPayload;
+import com.flowpilot.messaging.protocol.payloads.AgentFailedPayload;
+import com.flowpilot.messaging.protocol.payloads.AgentInterruptedPayload;
+import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
+
+import java.time.LocalDateTime;
+import java.util.Map;
+
+/**
+ * Applies the result events the agent service sends back.
+ *
+ * <p>Every handler is idempotent. A repeated {@code AgentCompleted} does not change the state
+ * again, because the invocation already reached a terminal state.
+ */
+@Slf4j
+@Service
+@RequiredArgsConstructor
+public class AgentEventHandler {
+
+    private final AgentInvocationMapper invocationMapper;
+    private final NodeExecutionMapper nodeExecutionMapper;
+    private final NodeResultService nodeResultService;
+    private final ExecutionEventService eventService;
+
+    /**
+     * The agent finished successfully.
+     */
+    @Transactional
+    public void onCompleted(AgentCompletedPayload payload) {
+        AgentInvocation invocation = invocationMapper.selectById(payload.getInvocationId());
+        if (invocation == null) {
+            log.warn("agent completed for an unknown invocation {}", payload.getInvocationId());
+            return;
+        }
+        if (AgentInvocation.STATUS_SUCCEEDED.equals(invocation.getStatus())) {
+            log.info("agent invocation {} already succeeded, ignoring the duplicate event",
+                    invocation.getId());
+            return;
+        }
+
+        NodeExecution node = nodeExecutionMapper.selectById(invocation.getNodeExecutionId());
+        if (node == null) {
+            return;
+        }
+
+        invocation.setStatus(AgentInvocation.STATUS_SUCCEEDED);
+        invocation.setCheckpointId(payload.getCheckpointId());
+        invocation.setFinishedAt(LocalDateTime.now());
+        if (payload.getUsage() != null) {
+            invocation.setTokenInput(payload.getUsage().getInputTokens() == null
+                    ? 0L : payload.getUsage().getInputTokens());
+            invocation.setTokenOutput(payload.getUsage().getOutputTokens() == null
+                    ? 0L : payload.getUsage().getOutputTokens());
+        }
+        invocationMapper.updateById(invocation);
+
+        Map<String, Object> output = payload.getResult() == null ? Map.of() : payload.getResult();
+        boolean accepted = nodeResultService.complete(node.getId(), invocation.getAttemptNo(),
+                node.getLeaseToken(), output);
+        if (!accepted) {
+            log.warn("agent result for invocation {} was not accepted by node {}",
+                    invocation.getId(), node.getId());
+            return;
+        }
+        eventService.append(invocation.getWorkflowExecutionId(), node.getId(),
+                EventType.AGENT_COMPLETED,
+                Map.of("invocationId", invocation.getId(),
+                        "threadId", invocation.getThreadId(),
+                        "tokenInput", invocation.getTokenInput(),
+                        "tokenOutput", invocation.getTokenOutput()), null);
+    }
+
+    /**
+     * The agent failed. The business retry policy decides whether the node is retried.
+     */
+    @Transactional
+    public void onFailed(AgentFailedPayload payload) {
+        AgentInvocation invocation = invocationMapper.selectById(payload.getInvocationId());
+        if (invocation == null) {
+            log.warn("agent failed for an unknown invocation {}", payload.getInvocationId());
+            return;
+        }
+        if (AgentInvocation.STATUS_SUCCEEDED.equals(invocation.getStatus())
+                || AgentInvocation.STATUS_FAILED.equals(invocation.getStatus())) {
+            log.info("agent invocation {} already reached a terminal state, ignoring the duplicate event",
+                    invocation.getId());
+            return;
+        }
+
+        NodeExecution node = nodeExecutionMapper.selectById(invocation.getNodeExecutionId());
+        if (node == null) {
+            return;
+        }
+
+        invocation.setStatus(AgentInvocation.STATUS_FAILED);
+        invocation.setCheckpointId(payload.getCheckpointId());
+        invocation.setErrorCode(payload.getErrorCode());
+        invocation.setErrorMessage(payload.getErrorMessage());
+        invocation.setFinishedAt(LocalDateTime.now());
+        invocationMapper.updateById(invocation);
+
+        boolean retryable = payload.getRetryable() == null || payload.getRetryable();
+        nodeResultService.fail(node.getId(), invocation.getAttemptNo(), node.getLeaseToken(),
+                payload.getErrorCode(), payload.getErrorMessage(),
+                payload.getErrorCategory(), retryable, null);
+
+        eventService.append(invocation.getWorkflowExecutionId(), node.getId(), EventType.AGENT_FAILED,
+                Map.of("invocationId", invocation.getId(),
+                        "errorCode", payload.getErrorCode(),
+                        "errorCategory", payload.getErrorCategory()), null);
+    }
+
+    /**
+     * The agent paused and waits for a human decision.
+     */
+    @Transactional
+    public void onInterrupted(AgentInterruptedPayload payload) {
+        AgentInvocation invocation = invocationMapper.selectById(payload.getInvocationId());
+        if (invocation == null) {
+            log.warn("agent interrupted for an unknown invocation {}", payload.getInvocationId());
+            return;
+        }
+        if (AgentInvocation.STATUS_WAITING_HUMAN.equals(invocation.getStatus())) {
+            log.info("agent invocation {} already waits for a human, ignoring the duplicate event",
+                    invocation.getId());
+            return;
+        }
+
+        NodeExecution node = nodeExecutionMapper.selectById(invocation.getNodeExecutionId());
+        if (node == null) {
+            return;
+        }
+
+        invocation.setStatus(AgentInvocation.STATUS_WAITING_HUMAN);
+        invocation.setCheckpointId(payload.getCheckpointId());
+        invocationMapper.updateById(invocation);
+
+        nodeExecutionMapper.markWaitingHuman(node.getId(), invocation.getAttemptNo());
+
+        Map<String, Object> interruptData = new java.util.LinkedHashMap<>();
+        if (payload.getInterruptData() != null) {
+            interruptData.put("title", payload.getInterruptData().getTitle());
+            interruptData.put("description", payload.getInterruptData().getDescription());
+            interruptData.put("requestedAction", payload.getInterruptData().getRequestedAction());
+            if (payload.getInterruptData().getPayload() != null) {
+                interruptData.put("payload", payload.getInterruptData().getPayload());
+            }
+        }
+        interruptData.put("invocationId", invocation.getId());
+        interruptData.put("threadId", invocation.getThreadId());
+        interruptData.put("checkpointId", payload.getCheckpointId());
+        interruptData.put("nodeKey", node.getNodeKey());
+
+        eventService.append(invocation.getWorkflowExecutionId(), node.getId(),
+                EventType.AGENT_INTERRUPTED, interruptData, null);
+        log.info("agent invocation {} interrupted, waiting for a human decision", invocation.getId());
+    }
+
+    /**
+     * Stores the latest known checkpoint id of an invocation.
+     */
+    @Transactional
+    public void updateCheckpoint(Long invocationId, String checkpointId) {
+        AgentInvocation invocation = invocationMapper.selectById(invocationId);
+        if (invocation == null) {
+            return;
+        }
+        invocation.setCheckpointId(checkpointId);
+        invocationMapper.updateById(invocation);
+    }
+}

@@ -1,0 +1,30 @@
+# Build output
+target/
+dist/
+build/
+*.jar
+*.war
+
+# Dependencies
+node_modules/
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+
+# IDE
+.idea/
+.vscode/
+*.iml
+
+# Local environment
+.env
+.env.local
+*.log
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Uploads
+.uploads/

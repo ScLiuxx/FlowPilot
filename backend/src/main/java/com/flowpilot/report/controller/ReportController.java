@@ -1,0 +1,97 @@
+package com.flowpilot.report.controller;
+
+import com.flowpilot.common.result.PageResult;
+import com.flowpilot.common.result.Result;
+import com.flowpilot.common.security.CurrentUser;
+import com.flowpilot.common.util.JsonUtils;
+import com.flowpilot.execution.entity.WorkflowExecution;
+import com.flowpilot.execution.mapper.WorkflowExecutionMapper;
+import com.flowpilot.report.entity.AnalysisReport;
+import com.flowpilot.report.service.ReportService;
+import lombok.RequiredArgsConstructor;
+import org.springframework.http.HttpHeaders;
+import org.springframework.http.MediaType;
+import org.springframework.http.ResponseEntity;
+import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PathVariable;
+import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
+import org.springframework.web.bind.annotation.RestController;
+
+import java.nio.charset.StandardCharsets;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+
+@RestController
+@RequestMapping("/api/v1/reports")
+@RequiredArgsConstructor
+public class ReportController {
+
+    private final ReportService reportService;
+    private final WorkflowExecutionMapper executionMapper;
+
+    @GetMapping
+    public Result<PageResult<Map<String, Object>>> list(
+            @RequestParam(defaultValue = "1") int page,
+            @RequestParam(defaultValue = "20") int size,
+            @RequestParam(required = false) String status) {
+        PageResult<AnalysisReport> result = reportService.page(page, size, status);
+        List<Map<String, Object>> records = result.getRecords().stream()
+                .map(ReportController::toResponse)
+                .toList();
+        return Result.success(PageResult.of(result.getTotal(), result.getPage(), result.getSize(), records));
+    }
+
+    @GetMapping("/{reportId}")
+    public Result<Map<String, Object>> get(@PathVariable Long reportId) {
+        AnalysisReport report = reportService.get(reportId);
+        requireAccess(report);
+        return Result.success(toResponse(report));
+    }
+
+    @GetMapping("/{reportId}/download")
+    public ResponseEntity<byte[]> download(@PathVariable Long reportId) {
+        AnalysisReport report = reportService.get(reportId);
+        requireAccess(report);
+        String markdown = report.getMarkdownContent() == null ? "" : report.getMarkdownContent();
+        byte[] body = markdown.getBytes(StandardCharsets.UTF_8);
+        return ResponseEntity.ok()
+                .header(HttpHeaders.CONTENT_DISPOSITION,
+                        "attachment; filename=\"" + report.getReportNo() + ".md\"")
+                .contentType(MediaType.parseMediaType("text/markdown; charset=UTF-8"))
+                .body(body);
+    }
+
+    private void requireAccess(AnalysisReport report) {
+        WorkflowExecution execution = executionMapper.selectById(report.getWorkflowExecutionId());
+        if (execution == null) {
+            return;
+        }
+        if (!CurrentUser.isAdmin() && !execution.getUserId().equals(CurrentUser.requireId())) {
+            throw new com.flowpilot.common.exception.BizException(
+                    com.flowpilot.common.result.ErrorCode.RP_FORBIDDEN);
+        }
+    }
+
+    static Map<String, Object> toResponse(AnalysisReport report) {
+        Map<String, Object> response = new LinkedHashMap<>();
+        response.put("reportId", report.getId());
+        response.put("reportNo", report.getReportNo());
+        response.put("workflowExecutionId", report.getWorkflowExecutionId());
+        response.put("title", report.getTitle());
+        response.put("repositoryUrl", report.getRepositoryUrl());
+        response.put("reportType", report.getReportType());
+        response.put("status", report.getStatus());
+        response.put("summary", report.getSummary());
+        response.put("content", report.getContentJson() == null
+                ? null : JsonUtils.toMap(report.getContentJson()));
+        response.put("markdownContent", report.getMarkdownContent());
+        response.put("contentHash", report.getContentHash());
+        response.put("generatedAt", report.getGeneratedAt() == null
+                ? null : report.getGeneratedAt().toString());
+        response.put("createdAt", report.getCreatedAt() == null
+                ? null : report.getCreatedAt().toString());
+        return response;
+    }
+}

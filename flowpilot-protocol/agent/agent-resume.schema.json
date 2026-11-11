@@ -1,0 +1,14 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://flowpilot.io/protocol/agent/agent-resume.schema.json",
+  "title": "AgentResumePayload",
+  "type": "object",
+  "required": ["invocationId", "threadId", "resumeRequestId"],
+  "properties": {
+    "invocationId": { "type": "integer", "format": "int64" },
+    "threadId": { "type": "string" },
+    "resumeRequestId": { "type": "string", "description": "Idempotency key preventing duplicate resumes." },
+    "approvalId": { "type": ["integer", "null"], "format": "int64" },
+    "resumeValue": { "type": "object" }
+  }
+}

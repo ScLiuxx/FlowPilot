@@ -1,0 +1,23 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://flowpilot.io/protocol/agent/agent-execute.schema.json",
+  "title": "AgentExecutePayload",
+  "type": "object",
+  "required": ["agentType", "threadId", "invocationId"],
+  "properties": {
+    "agentType": { "type": "string", "description": "Registered agent type, e.g. REPOSITORY_ANALYST." },
+    "threadId": { "type": "string", "description": "Stable LangGraph thread id, format flowpilot-{invocationId}." },
+    "invocationId": { "type": "integer", "format": "int64" },
+    "input": { "type": "object" },
+    "config": {
+      "type": "object",
+      "properties": {
+        "model": { "type": ["string", "null"] },
+        "maxIterations": { "type": "integer" },
+        "maxToolCalls": { "type": "integer" },
+        "maxTokens": { "type": "integer" },
+        "timeoutSeconds": { "type": "integer" }
+      }
+    }
+  }
+}

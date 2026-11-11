@@ -1,0 +1,14 @@
+# The worker runs the same code as the API. The difference is the Spring profile that decides
+# which listeners are started.
+FROM eclipse-temurin:21-jre-jammy
+WORKDIR /app
+
+RUN groupadd --system flowpilot \
+ && useradd --system --gid flowpilot --create-home flowpilot
+
+COPY --from=builder /build/target/flowpilot-backend.jar app.jar
+
+USER flowpilot
+
+ENTRYPOINT ["java", "-XX:MaxRAMPercentage=75.0", "-Duser.timezone=UTC", \
+            "-Dspring.profiles.active=worker", "-jar", "/app/app.jar"]

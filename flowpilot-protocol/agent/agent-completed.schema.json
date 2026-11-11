@@ -1,0 +1,20 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://flowpilot.io/protocol/agent/agent-completed.schema.json",
+  "title": "AgentCompletedPayload",
+  "type": "object",
+  "required": ["invocationId", "threadId"],
+  "properties": {
+    "invocationId": { "type": "integer", "format": "int64" },
+    "threadId": { "type": "string" },
+    "checkpointId": { "type": ["string", "null"] },
+    "result": { "type": "object" },
+    "usage": {
+      "type": "object",
+      "properties": {
+        "inputTokens": { "type": "integer", "format": "int64" },
+        "outputTokens": { "type": "integer", "format": "int64" }
+      }
+    }
+  }
+}

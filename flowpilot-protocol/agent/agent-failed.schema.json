@@ -1,0 +1,17 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://flowpilot.io/protocol/agent/agent-failed.schema.json",
+  "title": "AgentFailedPayload",
+  "type": "object",
+  "required": ["invocationId", "threadId", "errorCode", "errorCategory", "errorMessage", "retryable"],
+  "properties": {
+    "invocationId": { "type": "integer", "format": "int64" },
+    "threadId": { "type": "string" },
+    "checkpointId": { "type": ["string", "null"] },
+    "errorCode": { "type": "string" },
+    "errorCategory": { "type": "string", "enum": ["TRANSIENT", "RATE_LIMIT", "VALIDATION", "PERMISSION", "BUSINESS", "INTERNAL"] },
+    "errorMessage": { "type": "string" },
+    "retryable": { "type": "boolean" },
+    "diagnostics": { "type": ["object", "null"] }
+  }
+}

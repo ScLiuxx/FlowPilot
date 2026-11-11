@@ -1,0 +1,18 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://flowpilot.io/protocol/common/error.schema.json",
+  "title": "ErrorPayload",
+  "description": "Uniform error body used inside node failure and agent failure payloads.",
+  "type": "object",
+  "required": ["errorCode", "errorCategory", "errorMessage", "retryable"],
+  "properties": {
+    "errorCode": { "type": "string", "description": "Stable business error code, e.g. GITHUB_API_TIMEOUT." },
+    "errorCategory": {
+      "type": "string",
+      "enum": ["TRANSIENT", "RATE_LIMIT", "VALIDATION", "PERMISSION", "BUSINESS", "INTERNAL"]
+    },
+    "errorMessage": { "type": "string", "description": "Human readable, safe to surface in the console." },
+    "retryable": { "type": "boolean" },
+    "diagnostics": { "type": ["object", "null"], "description": "Internal diagnostic context, never returned to end users." }
+  }
+}

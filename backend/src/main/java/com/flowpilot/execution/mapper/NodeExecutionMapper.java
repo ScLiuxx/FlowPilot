@@ -1,0 +1,263 @@
+package com.flowpilot.execution.mapper;
+
+import com.baomidou.mybatisplus.core.mapper.BaseMapper;
+import com.flowpilot.execution.entity.NodeExecution;
+import org.apache.ibatis.annotations.Mapper;
+import org.apache.ibatis.annotations.Param;
+import org.apache.ibatis.annotations.Select;
+import org.apache.ibatis.annotations.Update;
+
+import java.time.LocalDateTime;
+import java.util.List;
+
+@Mapper
+public interface NodeExecutionMapper extends BaseMapper<NodeExecution> {
+
+    @Select("SELECT * FROM node_execution WHERE workflow_execution_id = #{executionId} ORDER BY id")
+    List<NodeExecution> findByWorkflowExecutionId(@Param("executionId") Long executionId);
+
+    /**
+     * Reads the node states of an execution without the JSON payloads.
+     *
+     * <p>The input and the output of a node can be large, because they carry the raw API
+     * responses. Loading them for a list query would sort megabytes of JSON in the database for
+     * no reason, so the list and the scheduling queries use this projection instead.
+     */
+    @Select("""
+            SELECT id, workflow_execution_id, node_key, node_type, status,
+                   current_attempt, max_attempts, worker_id, lease_token,
+                   error_code, error_message, version, started_at, finished_at
+              FROM node_execution
+             WHERE workflow_execution_id = #{executionId}
+             ORDER BY id
+            """)
+    List<NodeExecution> findStatesByWorkflowExecutionId(@Param("executionId") Long executionId);
+
+    @Select("SELECT * FROM node_execution WHERE workflow_execution_id = #{executionId} AND node_key = #{nodeKey}")
+    NodeExecution findByExecutionAndKey(@Param("executionId") Long executionId,
+                                        @Param("nodeKey") String nodeKey);
+
+    /**
+     * Marks a pending node as ready and stores its input.
+     *
+     * <p>The input is persisted so the worker reads the same values the scheduler computed, even
+     * if the message is redelivered much later.
+     *
+     * <p>Only one concurrent scheduler can win this update, which is what prevents a node from
+     * being dispatched twice.
+     */
+    @Update("""
+            UPDATE node_execution
+               SET status = 'READY',
+                   input_json = #{inputJson},
+                   version = version + 1,
+                   updated_at = CURRENT_TIMESTAMP(3)
+             WHERE id = #{id}
+               AND status = 'PENDING'
+            """)
+    int markReady(@Param("id") Long id, @Param("inputJson") String inputJson);
+
+    /**
+     * Releases a node whose retry delay elapsed back into the ready state.
+     */
+    @Update("""
+            UPDATE node_execution
+               SET status = 'READY',
+                   version = version + 1,
+                   updated_at = CURRENT_TIMESTAMP(3)
+             WHERE id = #{id}
+               AND status = 'RETRY_WAIT'
+            """)
+    int markRetryReady(@Param("id") Long id);
+
+    /**
+     * Acquires the execution lease. The fencing token is incremented so a previous owner of the
+     * lease can no longer commit a result.
+     */
+    @Update("""
+            UPDATE node_execution
+               SET status = 'RUNNING',
+                   worker_id = #{workerId},
+                   lease_token = lease_token + 1,
+                   lease_expire_at = #{leaseExpireAt},
+                   heartbeat_at = CURRENT_TIMESTAMP(3),
+                   current_attempt = #{attemptNo},
+                   started_at = COALESCE(started_at, CURRENT_TIMESTAMP(3)),
+                   version = version + 1,
+                   updated_at = CURRENT_TIMESTAMP(3)
+             WHERE id = #{id}
+               AND status IN ('READY', 'RETRY_WAIT')
+               AND current_attempt = #{expectedAttempt}
+            """)
+    int acquireLease(@Param("id") Long id,
+                     @Param("workerId") String workerId,
+                     @Param("attemptNo") Integer attemptNo,
+                     @Param("expectedAttempt") Integer expectedAttempt,
+                     @Param("leaseExpireAt") LocalDateTime leaseExpireAt);
+
+    /**
+     * Extends the lease while the worker is still executing.
+     *
+     * @return 0 when the worker lost the lease and must stop its work
+     */
+    @Update("""
+            UPDATE node_execution
+               SET heartbeat_at = CURRENT_TIMESTAMP(3),
+                   lease_expire_at = #{leaseExpireAt},
+                   updated_at = CURRENT_TIMESTAMP(3)
+             WHERE id = #{id}
+               AND status = 'RUNNING'
+               AND worker_id = #{workerId}
+               AND lease_token = #{leaseToken}
+            """)
+    int heartbeat(@Param("id") Long id,
+                  @Param("workerId") String workerId,
+                  @Param("leaseToken") Long leaseToken,
+                  @Param("leaseExpireAt") LocalDateTime leaseExpireAt);
+
+    /**
+     * Commits a successful result. The status, attempt and fencing token must all still match,
+     * otherwise a stale worker could overwrite a newer result.
+     */
+    @Update("""
+            UPDATE node_execution
+               SET status = 'SUCCEEDED',
+                   output_json = #{outputJson},
+                   error_code = NULL,
+                   error_message = NULL,
+                   finished_at = CURRENT_TIMESTAMP(3),
+                   lease_expire_at = NULL,
+                   version = version + 1,
+                   updated_at = CURRENT_TIMESTAMP(3)
+             WHERE id = #{id}
+               AND status = 'RUNNING'
+               AND current_attempt = #{attemptNo}
+               AND lease_token = #{leaseToken}
+            """)
+    int completeSuccessfully(@Param("id") Long id,
+                             @Param("attemptNo") Integer attemptNo,
+                             @Param("leaseToken") Long leaseToken,
+                             @Param("outputJson") String outputJson);
+
+    /**
+     * Marks the node as waiting for a retry.
+     */
+    @Update("""
+            UPDATE node_execution
+               SET status = 'RETRY_WAIT',
+                   error_code = #{errorCode},
+                   error_message = #{errorMessage},
+                   lease_expire_at = NULL,
+                   version = version + 1,
+                   updated_at = CURRENT_TIMESTAMP(3)
+             WHERE id = #{id}
+               AND status = 'RUNNING'
+               AND current_attempt = #{attemptNo}
+               AND lease_token = #{leaseToken}
+            """)
+    int markRetryWait(@Param("id") Long id,
+                      @Param("attemptNo") Integer attemptNo,
+                      @Param("leaseToken") Long leaseToken,
+                      @Param("errorCode") String errorCode,
+                      @Param("errorMessage") String errorMessage);
+
+    /**
+     * Marks the node as terminally failed.
+     */
+    @Update("""
+            UPDATE node_execution
+               SET status = 'FAILED',
+                   error_code = #{errorCode},
+                   error_message = #{errorMessage},
+                   finished_at = CURRENT_TIMESTAMP(3),
+                   lease_expire_at = NULL,
+                   version = version + 1,
+                   updated_at = CURRENT_TIMESTAMP(3)
+             WHERE id = #{id}
+               AND status = 'RUNNING'
+               AND current_attempt = #{attemptNo}
+               AND lease_token = #{leaseToken}
+            """)
+    int markFailed(@Param("id") Long id,
+                   @Param("attemptNo") Integer attemptNo,
+                   @Param("leaseToken") Long leaseToken,
+                   @Param("errorCode") String errorCode,
+                   @Param("errorMessage") String errorMessage);
+
+    /**
+     * Moves a node into the human waiting state, used when an agent interrupts itself.
+     */
+    @Update("""
+            UPDATE node_execution
+               SET status = 'WAITING_HUMAN',
+                   lease_expire_at = NULL,
+                   version = version + 1,
+                   updated_at = CURRENT_TIMESTAMP(3)
+             WHERE id = #{id}
+               AND status = 'RUNNING'
+               AND current_attempt = #{attemptNo}
+            """)
+    int markWaitingHuman(@Param("id") Long id,
+                         @Param("attemptNo") Integer attemptNo);
+
+    /**
+     * Returns a waiting node to the ready state after an approval was granted.
+     */
+    @Update("""
+            UPDATE node_execution
+               SET status = 'READY',
+                   version = version + 1,
+                   updated_at = CURRENT_TIMESTAMP(3)
+             WHERE id = #{id}
+               AND status = 'WAITING_HUMAN'
+            """)
+    int releaseFromHumanWait(@Param("id") Long id);
+
+    /**
+     * Completes a node that waited for a human decision.
+     */
+    @Update("""
+            UPDATE node_execution
+               SET status = 'SUCCEEDED',
+                   output_json = #{outputJson},
+                   finished_at = CURRENT_TIMESTAMP(3),
+                   lease_expire_at = NULL,
+                   version = version + 1,
+                   updated_at = CURRENT_TIMESTAMP(3)
+             WHERE id = #{id}
+               AND status = 'WAITING_HUMAN'
+            """)
+    int completeFromHumanWait(@Param("id") Long id, @Param("outputJson") String outputJson);
+
+    /**
+     * Cancels a node that has not started yet.
+     */
+    @Update("""
+            UPDATE node_execution
+               SET status = 'CANCELED',
+                   finished_at = CURRENT_TIMESTAMP(3),
+                   version = version + 1,
+                   updated_at = CURRENT_TIMESTAMP(3)
+             WHERE id = #{id}
+               AND status IN ('PENDING', 'READY', 'RETRY_WAIT')
+            """)
+    int cancel(@Param("id") Long id);
+
+    @Select("""
+            SELECT * FROM node_execution
+             WHERE status = 'RUNNING'
+               AND lease_expire_at IS NOT NULL
+               AND lease_expire_at < #{now}
+             ORDER BY lease_expire_at
+             LIMIT #{limit}
+            """)
+    List<NodeExecution> findExpiredLeases(@Param("now") LocalDateTime now, @Param("limit") int limit);
+
+    @Select("""
+            SELECT * FROM node_execution
+             WHERE status = 'RETRY_WAIT'
+             ORDER BY updated_at
+             LIMIT #{limit}
+            """)
+    List<NodeExecution> findRetryWaiting(@Param("limit") int limit);
+}
