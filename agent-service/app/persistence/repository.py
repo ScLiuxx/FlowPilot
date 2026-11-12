@@ -46,19 +46,13 @@ RESUME_CLAIMED = "CLAIMED"
 #: older version of the service.
 RESUME_PROCESSING = "PROCESSING"
 
-#: A resume request whose worker died: the lease expired and another worker
-#: may take it over.
-RESUME_RECOVERABLE = "RECOVERABLE"
-
 #: The states of a resume request that mean "the graph is being continued".
-RESUME_IN_FLIGHT = frozenset({RESUME_CLAIMED, RESUME_PROCESSING})
-
-#: The states a resume request can be taken over from.
 #:
-#: A recoverable request is not being continued by anybody: the automatic
-#: takeover was given up, and the request may be continued again once the cause
-#: is gone. The thread and its checkpoint are still intact.
-RESUME_CLAIMABLE = frozenset({RESUME_CLAIMED, RESUME_PROCESSING, RESUME_RECOVERABLE})
+#: A request that is not in one of them is over: it either carries the result
+#: of the resume or the error that ended it. The ledger and the invocation
+#: always reach the same state, so the two state machines never contradict
+#: each other.
+RESUME_IN_FLIGHT = frozenset({RESUME_CLAIMED, RESUME_PROCESSING})
 
 #: Lifecycle of an outbox row.
 OUTBOX_PENDING = "PENDING"
@@ -253,6 +247,20 @@ class ExecutionRecordStore(Protocol):
     async def get_resume(
         self, invocation_id: int, resume_request_id: str
     ) -> ResumeRecord | None: ...
+
+    async def list_stale_resumes(
+        self, *, stale_before: datetime, limit: int = 20
+    ) -> list[ResumeRecord]:
+        """The resume requests whose owner did not come back.
+
+        A request is stale when it is still in flight but its lease expired:
+        the worker that owned it died or lost its connection. The recovery
+        scanner uses this list to continue those requests, so the recovery does
+        not depend on the redelivery of the broker alone.
+
+        :param stale_before: the requests whose lease expired before this moment
+        :param limit: how many requests are returned at most
+        """
 
     async def create_resume(
         self,
@@ -550,6 +558,20 @@ class InMemoryExecutionRecordStore:
                 return None
             return _copy_resume(record)
 
+    async def list_stale_resumes(
+        self, *, stale_before: datetime, limit: int = 20
+    ) -> list[ResumeRecord]:
+        async with self._lock:
+            stale: list[ResumeRecord] = []
+            for record in self._resumes.values():
+                if record.status not in RESUME_IN_FLIGHT:
+                    continue
+                if record.lease_expire_at is None or record.lease_expire_at > stale_before:
+                    continue
+                stale.append(_copy_resume(record))
+            stale.sort(key=lambda item: item.lease_expire_at or stale_before)
+            return stale[:limit]
+
     async def create_resume(
         self,
         *,
@@ -621,7 +643,7 @@ class InMemoryExecutionRecordStore:
             if record is None:
                 return None
             now = datetime.now(tz=timezone.utc)
-            if record.status not in RESUME_CLAIMABLE:
+            if record.status not in RESUME_IN_FLIGHT:
                 return None
             if expected_lease_token is not None and record.lease_token != expected_lease_token:
                 # Another worker already took the lease over.
@@ -1118,6 +1140,37 @@ class PostgresExecutionRecordStore:
                 row = await cur.fetchone()
         return _row_to_resume(row) if row else None
 
+    async def list_stale_resumes(
+        self, *, stale_before: datetime, limit: int = 20
+    ) -> list[ResumeRecord]:
+        """The resume requests whose owner did not come back.
+
+        The rows are locked while they are read, so two scanners of two
+        replicas do not recover the same request: the second one waits for the
+        lock and then sees the fresh lease of the first one.
+        """
+        pool = self._require_pool()
+        async with pool.connection() as conn:
+            async with conn.cursor() as cur:
+                await cur.execute(
+                    """
+                    SELECT invocation_id, resume_request_id, thread_id, status, payload,
+                           checkpoint_id, lease_token, lease_expire_at, takeover_count,
+                           created_at, updated_at
+                    FROM agent_resume_record
+                    WHERE status = ANY(%s)
+                      AND lease_expire_at IS NOT NULL
+                      AND lease_expire_at <= %s
+                    ORDER BY lease_expire_at
+                    LIMIT %s
+                    FOR UPDATE SKIP LOCKED
+                    """,
+                    (list(RESUME_IN_FLIGHT), stale_before, limit),
+                )
+                rows = await cur.fetchall()
+            await conn.commit()
+        return [_row_to_resume(row) for row in rows]
+
     async def create_resume(
         self,
         *,
@@ -1252,7 +1305,7 @@ class PostgresExecutionRecordStore:
                         RESUME_CLAIMED,
                         invocation_id,
                         resume_request_id,
-                        list(RESUME_CLAIMABLE),
+                        list(RESUME_IN_FLIGHT),
                         expected_lease_token,
                         expected_lease_token,
                     ),

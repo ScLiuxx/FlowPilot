@@ -32,6 +32,7 @@ from app.runtime.context import (
 )
 from app.runtime.executor import AgentExecutor
 from app.runtime.registry import registry as default_registry
+from app.runtime.resume_recovery import ResumeRecoveryScanner
 from app.telemetry import configure_tracing, flush_tracing
 
 logger = get_logger(__name__)
@@ -113,21 +114,33 @@ def create_app(
             outbox = OutboxPublisher(store=store, publisher=publisher, settings=settings)
             application.state.outbox_publisher = outbox
 
+            recovery = ResumeRecoveryScanner(
+                store=store,
+                checkpointer=checkpointer,
+                publisher=publisher,
+                settings=settings,
+            )
+            application.state.resume_recovery = recovery
+
             application.state.stopping = False
             task: asyncio.Task | None = None
             outbox_task: asyncio.Task | None = None
+            recovery_task: asyncio.Task | None = None
             if messaging_enabled:
                 task = asyncio.create_task(_messaging_supervisor(application, consumer))
                 application.state.messaging_task = task
                 outbox_task = asyncio.create_task(outbox.run())
                 application.state.outbox_task = outbox_task
+                recovery_task = asyncio.create_task(recovery.run())
+                application.state.resume_recovery_task = recovery_task
 
             try:
                 yield
             finally:
                 application.state.stopping = True
                 outbox.stop()
-                for background in (outbox_task, task):
+                recovery.stop()
+                for background in (recovery_task, outbox_task, task):
                     if background is None:
                         continue
                     background.cancel()

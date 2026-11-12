@@ -44,10 +44,9 @@ from app.messaging.events import (
 )
 from app.persistence.checkpoint import expected_thread_id, latest_checkpoint_id
 from app.persistence.repository import (
-    RESUME_CLAIMABLE,
     RESUME_CLAIMED,
+    RESUME_IN_FLIGHT,
     RESUME_PROCESSING,
-    RESUME_RECOVERABLE,
     STATUS_CANCELLED,
     STATUS_FAILED,
     STATUS_INTERRUPTED,
@@ -64,6 +63,7 @@ from app.runtime.errors import (
     AgentExecutionError,
     InternalError,
     InvocationTimeoutError,
+    ResumeTakeoverLimitError,
     ValidationError,
 )
 from app.runtime.registry import AgentGraphRegistry, registry as default_registry
@@ -395,12 +395,23 @@ class AgentExecutor:
         # The resume request is claimed *before* the graph is continued: the
         # unique constraint of the ledger makes the claim atomic, and the lease
         # of the ledger says who is allowed to continue the thread.
+        #
+        # The routing of the original command is kept in the ledger: the
+        # recovery scanner rebuilds the command from it when the worker that
+        # owned the request did not come back.
         record, created = await self._store.create_resume(
             invocation_id=invocation_id,
             resume_request_id=resume_request_id,
             thread_id=payload.threadId,
             status=RESUME_CLAIMED,
-            payload={},
+            payload={
+                "workflowExecutionId": envelope.workflowExecutionId,
+                "nodeExecutionId": envelope.nodeExecutionId,
+                "attemptNo": envelope.attemptNo,
+                "traceId": envelope.traceId,
+                "approvalId": payload.approvalId,
+                "resumeValue": payload.resumeValue,
+            },
             lease_expire_at=_utcnow()
             + timedelta(seconds=self._settings.resume_lease_seconds),
         )
@@ -408,7 +419,7 @@ class AgentExecutor:
         takeover = False
 
         if not created:
-            if record.status not in RESUME_CLAIMABLE:
+            if record.status not in RESUME_IN_FLIGHT:
                 # The resume was already completed: the recorded result is
                 # published again so the backend learns about it.
                 logger.info(
@@ -419,7 +430,22 @@ class AgentExecutor:
             # The resume is in flight. It is either a redelivery of a message
             # that is being processed right now, or the remains of a worker
             # that died. The lease tells the two apart.
-            lease = await self._take_over_resume(invocation_id, resume_request_id, record)
+            try:
+                lease = await self._take_over_resume(invocation_id, resume_request_id, record)
+            except ResumeTakeoverLimitError as exc:
+                # The resume was given up. The ledger of the request and the
+                # invocation are closed together, so both state machines say
+                # the same thing: the run is over.
+                return await self._fail(
+                    AgentExecutePayload(
+                        agentType="",
+                        threadId=payload.threadId,
+                        invocationId=invocation_id,
+                    ),
+                    exc,
+                    envelope,
+                    resume_lease=(resume_request_id, record.lease_token),
+                )
             if lease is None:
                 logger.info(
                     "agent.resume ignored (another worker owns the resume)",
@@ -564,7 +590,7 @@ class AgentExecutor:
         )
         while True:
             current = await self._store.get_resume(invocation_id, resume_request_id)
-            if current is None or current.status not in RESUME_CLAIMABLE:
+            if current is None or current.status not in RESUME_IN_FLIGHT:
                 # The owner finished the resume in the meantime.
                 return None
             now = _utcnow()
@@ -572,9 +598,6 @@ class AgentExecutor:
                 # The lease of the owner expired: the worker died. The resume
                 # may be taken over — but only as often as the limit allows.
                 if current.takeover_count >= self._settings.resume_max_takeovers:
-                    await self._mark_recoverable(
-                        invocation_id, resume_request_id, current.lease_token
-                    )
                     logger.error(
                         "the resume was taken over too often, giving up",
                         extra={
@@ -582,12 +605,14 @@ class AgentExecutor:
                             "takeoverCount": current.takeover_count,
                         },
                     )
-                    raise ValidationError(
+                    # The ledger and the invocation reach the same terminal
+                    # state: the caller writes both of them in one transaction.
+                    raise ResumeTakeoverLimitError(
                         "the resume was taken over too often, the worker keeps dying",
-                        error_code="AG-RESUME-TOKEOVER-LIMIT-001",
-                        category=ErrorCategory.TRANSIENT,
-                        retryable=True,
-                        diagnostics={"takeoverCount": current.takeover_count},
+                        diagnostics={
+                            "takeoverCount": current.takeover_count,
+                            "threadId": current.thread_id,
+                        },
                     )
                 claimed = await self._store.claim_resume_lease(
                     invocation_id,
@@ -620,26 +645,6 @@ class AgentExecutor:
                 return None
             await asyncio.sleep(self._settings.resume_lease_poll_seconds)
 
-    async def _mark_recoverable(
-        self, invocation_id: int, resume_request_id: str, lease_token: int
-    ) -> None:
-        """Record that the resume may be recovered by hand.
-
-        The automatic takeover is given up when the workers keep dying. The
-        ledger then says ``RECOVERABLE``: the thread and its checkpoint are
-        still there, an operator (or a later delivery, after the cause is
-        gone) can continue it.
-        """
-        try:
-            await self._store.update_resume(
-                invocation_id,
-                resume_request_id,
-                status=RESUME_RECOVERABLE,
-                lease_token=lease_token,
-            )
-        except Exception:  # pragma: no cover - the audit must not mask the error
-            logger.exception("the resume could not be marked as recoverable")
-
     async def _renew_resume_lease(
         self, invocation_id: int, resume_request_id: str, lease_token: int
     ) -> None:
@@ -648,8 +653,14 @@ class AgentExecutor:
         The lease is renewed while the graph is continued. When the renewal
         fails the lease was taken over by another worker — this worker must
         stop, otherwise two workers would continue the same thread.
+
+        A database that cannot be reached is handled the same way: the worker
+        can no longer prove that it owns the lease, and another worker may take
+        it over. The worker therefore gives up after a few failed renewals
+        instead of running a thread whose ownership it cannot confirm.
         """
         interval = max(1.0, self._settings.resume_lease_seconds / 3)
+        failures = 0
         while True:
             await asyncio.sleep(interval)
             try:
@@ -660,11 +671,30 @@ class AgentExecutor:
                     lease_expire_at=_utcnow()
                     + timedelta(seconds=self._settings.resume_lease_seconds),
                 )
+                failures = 0
             except asyncio.CancelledError:
                 raise
             except Exception:  # pragma: no cover - defensive
-                logger.exception("the resume lease could not be renewed")
-                continue
+                failures += 1
+                logger.exception(
+                    "the resume lease could not be renewed",
+                    extra={
+                        "resumeRequestId": resume_request_id,
+                        "failures": failures,
+                    },
+                )
+                if failures < self._settings.resume_lease_renew_failures:
+                    continue
+                logger.error(
+                    "the lease of the resume could not be confirmed, the worker stops",
+                    extra={
+                        "resumeRequestId": resume_request_id,
+                        "leaseToken": lease_token,
+                        "failures": failures,
+                    },
+                )
+                self._stop_running_graph(invocation_id)
+                return
             if not renewed:
                 logger.error(
                     "the resume lease was lost, the worker stops",
@@ -673,10 +703,14 @@ class AgentExecutor:
                         "leaseToken": lease_token,
                     },
                 )
-                task = self._running.get(invocation_id)
-                if task is not None:
-                    task.cancel()
+                self._stop_running_graph(invocation_id)
                 return
+
+    def _stop_running_graph(self, invocation_id: int) -> None:
+        """Stop the graph of an invocation whose ownership is not confirmed."""
+        task = self._running.get(invocation_id)
+        if task is not None:
+            task.cancel()
 
     def _build_context(
         self,

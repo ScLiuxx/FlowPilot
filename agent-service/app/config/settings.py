@@ -110,6 +110,19 @@ class Settings(BaseSettings):
     # was cancelled (a cancel that another replica handled).
     cancel_poll_seconds: float = 2.0
 
+    # --- resume recovery scanner ---------------------------------------
+    # How often the scanner walks the ledger of the resume requests.
+    resume_recovery_scan_seconds: float = 15.0
+    # How many stale requests the scanner recovers in one pass.
+    resume_recovery_batch_size: int = 20
+    # The grace period between the expiry of a lease and the recovery: it gives
+    # a worker that is only slow the chance to renew its lease.
+    resume_recovery_lease_grace_seconds: int = 10
+    # How often the lease of a running resume may fail to be renewed before the
+    # worker stops. Without the limit a worker that cannot reach the database
+    # would keep the thread busy while another worker may take it over.
+    resume_lease_renew_failures: int = 3
+
     # --- internal API --------------------------------------------------
     internal_api_token: str | None = Field(
         default=None,

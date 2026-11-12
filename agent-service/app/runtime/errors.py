@@ -109,3 +109,15 @@ class AgentCancelledError(BusinessError):
     default_code = "AG-CANCELLED-001"
     default_category = ErrorCategory.BUSINESS
     default_retryable = False
+
+
+#: Raised when a resume was taken over too often: the workers keep dying.
+#:
+#: The resume is given up. The ledger of the request and the invocation reach
+#: the same terminal state, so the two state machines never contradict each
+#: other. The checkpoint of the thread is kept, so the run can still be
+#: examined.
+class ResumeTakeoverLimitError(TransientError):
+    default_code = "AG-RESUME-TOKEOVER-LIMIT-001"
+    default_category = ErrorCategory.TRANSIENT
+    default_retryable = True

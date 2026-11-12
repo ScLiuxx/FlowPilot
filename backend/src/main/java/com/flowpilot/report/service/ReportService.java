@@ -174,6 +174,8 @@ public class ReportService {
         boolean complete = true;
         boolean exact = true;
         String collectedAt = null;
+        int exactCollections = 0;
+        int sampledCollections = 0;
         for (Map<String, Object> group : List.of(issues, activity, releases)) {
             Map<String, Object> collection = asMap(group.get("collection"));
             if (collection.isEmpty()) {
@@ -184,6 +186,9 @@ public class ReportService {
             }
             if (Boolean.FALSE.equals(collection.get("countExact"))) {
                 exact = false;
+                sampledCollections++;
+            } else {
+                exactCollections++;
             }
             Object at = collection.get("collectedAt");
             if (collectedAt == null && at != null) {
@@ -193,6 +198,8 @@ public class ReportService {
         merged.put("complete", complete);
         merged.put("countExact", exact);
         merged.put("sampled", !exact || !complete);
+        merged.put("exactCollections", exactCollections);
+        merged.put("sampledCollections", sampledCollections);
         if (collectedAt != null) {
             merged.put("collectedAt", collectedAt);
         }
@@ -216,9 +223,11 @@ public class ReportService {
         }
         Object openIssues = issues.get("openIssues");
         if (openIssues != null) {
-            summary.append("，本次采集到 ").append(openIssues).append(" 个未关闭 Issue");
-            if (Boolean.FALSE.equals(issues.get("countsExact"))) {
-                summary.append("（抽样，非全量）");
+            summary.append("，未关闭 Issue ").append(openIssues).append(" 个");
+            if (Boolean.TRUE.equals(issues.get("countsExact"))) {
+                summary.append("（GitHub 精确统计，不含 Pull Request）");
+            } else {
+                summary.append("（本次采集数量）");
             }
         }
         Object latestVersion = releases.get("latestVersion");
@@ -332,17 +341,27 @@ public class ReportService {
         if (!issues.isEmpty()) {
             markdown.append("## 3. Issue 与 Pull Request 活跃度\n\n");
             // The repository metadata carries the exact number of open issues
-            // and pull requests; the collections are samples of the history.
+            // AND pull requests together; the collections below separate them.
             Object reported = repository.get("openIssues");
             if (reported != null) {
-                markdown.append("- 未关闭 Issue 与 Pull Request（仓库元数据）：")
+                markdown.append("- 未关闭 Issue 与 Pull Request 合计（仓库元数据）：")
                         .append(reported).append("\n");
             }
-            markdown.append("- 本次采集的 Issue 总数：").append(issues.get("totalIssues")).append("\n");
+            // The counts come from a query that matches the issues only, so
+            // they never contain the pull requests. Whether they are the exact
+            // totals of the repository is stated by the collection metadata.
+            boolean exact = Boolean.TRUE.equals(issues.get("countsExact"));
+            markdown.append("- 未关闭 Issue：").append(issues.get("openIssues"))
+                    .append(exact ? "（GitHub 精确统计，不含 Pull Request）" : "（本次采集数量）")
+                    .append("\n");
+            markdown.append("- 已关闭 Issue：").append(issues.get("closedIssues"))
+                    .append(exact ? "（GitHub 精确统计，不含 Pull Request）" : "（本次采集数量）")
+                    .append("\n");
+            markdown.append("- Issue 总数（不含 Pull Request）：").append(issues.get("totalIssues"))
+                    .append("\n");
+            markdown.append("- 未关闭 Pull Request：").append(issues.get("pullRequests"))
+                    .append("\n");
             markdown.append("- 实际参与分析的条目数：").append(issues.get("analyzedItems")).append("\n");
-            markdown.append("- 本次采集的未关闭 Issue：").append(issues.get("openIssues")).append("\n");
-            markdown.append("- 本次采集的已关闭 Issue：").append(issues.get("closedIssues")).append("\n");
-            markdown.append("- 本次采集的 Pull Request：").append(issues.get("pullRequests")).append("\n");
             markdown.append("- 近 30 天新增 Issue（采集范围内）：").append(issues.get("recentIssues"))
                     .append("\n\n");
         }
@@ -403,11 +422,28 @@ public class ReportService {
         markdown.append("## 数据采集说明\n\n");
         markdown.append("- 采集时间：").append(collection.getOrDefault("collectedAt", "未知"))
                 .append("\n");
-        boolean exact = Boolean.TRUE.equals(collection.get("countExact"));
+        // The Issue numbers come from a query that matches the issues only, so
+        // they are the exact totals of the repository. The other numbers come
+        // from the paginated endpoints: they are the number of the items that
+        // were collected.
+        Object exactCollections = collection.get("exactCollections");
+        Object sampledCollections = collection.get("sampledCollections");
+        if (exactCollections instanceof Number exact && sampledCollections instanceof Number sampled) {
+            markdown.append("- 统计口径：")
+                    .append(exact.intValue() > 0
+                            ? "Issue 与 Pull Request 数量为精确总数（GitHub 查询返回的匹配总数），"
+                            : "")
+                    .append(sampled.intValue() > 0
+                            ? "提交与发布记录为分页采集数量"
+                            : "全部为精确总数")
+                    .append("\n");
+        } else {
+            boolean exact = Boolean.TRUE.equals(collection.get("countExact"));
+            markdown.append("- 统计口径：")
+                    .append(exact ? "精确总数（GitHub 直接返回的匹配总数）" : "本次采集数量（分页采样）")
+                    .append("\n");
+        }
         boolean complete = Boolean.TRUE.equals(collection.get("complete"));
-        markdown.append("- 统计口径：")
-                .append(exact ? "精确总数（GitHub 直接返回的匹配总数）" : "本次采集数量（分页采样）")
-                .append("\n");
         markdown.append("- 是否完整采集：").append(complete ? "是" : "否（仅采集了部分数据）")
                 .append("\n");
         markdown.append("- 是否为抽样结果：")

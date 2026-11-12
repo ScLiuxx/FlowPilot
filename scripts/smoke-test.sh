@@ -82,7 +82,7 @@ NODES=$(curl -fsS "$BASE_URL/api/v1/executions/$EXECUTION_ID/nodes" -H "$AUTH")
 echo "$NODES" | python3 -c '
 import json,sys
 nodes = json.load(sys.stdin)["data"]
-assert len(nodes) == 9, f"expected 9 nodes, got {len(nodes)}"
+assert len(nodes) == 10, f"expected 10 nodes, got {len(nodes)}"
 print("  node states: " + ", ".join(f"{n[chr(110)+chr(111)+chr(100)+chr(101)+chr(75)+chr(101)+chr(121)]}={n[chr(115)+chr(116)+chr(97)+chr(116)+chr(117)+chr(115)]}" for n in nodes))
 ' || fail "the node list is wrong: $NODES"
 

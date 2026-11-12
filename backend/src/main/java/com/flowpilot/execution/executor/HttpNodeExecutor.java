@@ -69,8 +69,10 @@ public class HttpNodeExecutor implements NodeExecutor {
      *
      * @param path the path of the endpoint, {@code {owner}} and {@code {repo}} are replaced
      * @param query the query parameters the endpoint is called with
+     * @param searchQuery the search query of a search endpoint, {@code {owner}} and
+     *                    {@code {repo}} are replaced. {@code null} for the ordinary endpoints.
      */
-    private record Operation(String path, Map<String, String> query) {
+    private record Operation(String path, Map<String, String> query, String searchQuery) {
     }
 
     /**
@@ -79,30 +81,49 @@ public class HttpNodeExecutor implements NodeExecutor {
      * <p>The issues are collected per state: the endpoint answers with the open
      * issues by default, so a single collection would never contain the closed
      * ones and the number of them would be wrong.
+     *
+     * <p>The issue <em>count</em> comes from the search endpoint: the issues
+     * endpoint answers with the issues <em>and</em> the pull requests, so its
+     * count is never the number of the issues. The search query carries
+     * {@code is:issue}, which excludes the pull requests.
      */
     private static final Map<String, Operation> OPERATIONS = Map.ofEntries(
             Map.entry("get_repository",
-                    new Operation("/repos/{owner}/{repo}", Map.of())),
+                    new Operation("/repos/{owner}/{repo}", Map.of(), null)),
             Map.entry("get_commits",
-                    new Operation("/repos/{owner}/{repo}/commits", Map.of())),
+                    new Operation("/repos/{owner}/{repo}/commits", Map.of(), null)),
             Map.entry("get_issues",
-                    new Operation("/repos/{owner}/{repo}/issues", Map.of("state", "open"))),
+                    new Operation("/repos/{owner}/{repo}/issues", Map.of("state", "open"), null)),
             Map.entry("get_open_issues",
-                    new Operation("/repos/{owner}/{repo}/issues", Map.of("state", "open"))),
+                    new Operation("/repos/{owner}/{repo}/issues", Map.of("state", "open"), null)),
             Map.entry("get_closed_issues",
-                    new Operation("/repos/{owner}/{repo}/issues", Map.of("state", "closed"))),
+                    new Operation("/repos/{owner}/{repo}/issues", Map.of("state", "closed"), null)),
             Map.entry("get_pull_requests",
-                    new Operation("/repos/{owner}/{repo}/pulls", Map.of("state", "all"))),
+                    new Operation("/repos/{owner}/{repo}/pulls", Map.of("state", "all"), null)),
             Map.entry("get_open_pull_requests",
-                    new Operation("/repos/{owner}/{repo}/pulls", Map.of("state", "open"))),
+                    new Operation("/repos/{owner}/{repo}/pulls", Map.of("state", "open"), null)),
             Map.entry("get_releases",
-                    new Operation("/repos/{owner}/{repo}/releases", Map.of())),
+                    new Operation("/repos/{owner}/{repo}/releases", Map.of(), null)),
             Map.entry("get_contributors",
-                    new Operation("/repos/{owner}/{repo}/contributors", Map.of())),
+                    new Operation("/repos/{owner}/{repo}/contributors", Map.of(), null)),
             Map.entry("get_languages",
-                    new Operation("/repos/{owner}/{repo}/languages", Map.of())),
+                    new Operation("/repos/{owner}/{repo}/languages", Map.of(), null)),
             Map.entry("get_dependency_manifest",
-                    new Operation("/repos/{owner}/{repo}/contents", Map.of())));
+                    new Operation("/repos/{owner}/{repo}/contents", Map.of(), null)),
+            // The search endpoints answer with the number of the matches, which
+            // is the number of the issues without the pull requests.
+            Map.entry("search_open_issues",
+                    new Operation("/search/issues", Map.of("sort", "created", "order", "desc"),
+                            "repo:{owner}/{repo} is:issue state:open")),
+            Map.entry("search_closed_issues",
+                    new Operation("/search/issues", Map.of("sort", "created", "order", "desc"),
+                            "repo:{owner}/{repo} is:issue state:closed")),
+            Map.entry("search_open_pull_requests",
+                    new Operation("/search/issues", Map.of("sort", "created", "order", "desc"),
+                            "repo:{owner}/{repo} is:pr state:open")),
+            Map.entry("search_closed_pull_requests",
+                    new Operation("/search/issues", Map.of("sort", "created", "order", "desc"),
+                            "repo:{owner}/{repo} is:pr state:closed")));
 
     private final HttpClient httpClient;
     private final String githubToken;
@@ -203,6 +224,12 @@ public class HttpNodeExecutor implements NodeExecutor {
      * <p>The count of the summary is the number of items that were <em>collected</em>. It is the
      * total of the repository only when the last page was reached; the metadata states which of
      * the two it is.
+     *
+     * <p>The search endpoint answers with an object instead of an array: it carries the number of
+     * the matches in {@code total_count} and the page of the matches in {@code items}. That count
+     * is the number of the matches of the query — the query carries {@code is:issue}, so the
+     * pull requests are not part of it. The count is therefore exact even when only a sample of
+     * the items was fetched, which is the whole point of using the search endpoint.
      */
     private Map<String, Object> collectPages(String url, NodeContext context,
                                              int perPage, int maxPages) throws IOException, InterruptedException {
@@ -210,6 +237,8 @@ public class HttpNodeExecutor implements NodeExecutor {
         int pagesFetched = 0;
         int lastPage = 0;
         boolean hasNext = false;
+        Long totalCount = null;
+        boolean incompleteResults = false;
 
         for (int page = 1; page <= maxPages; page++) {
             String pageUrl = withPage(withQuery(url, Map.of("per_page", String.valueOf(perPage))), page);
@@ -222,6 +251,24 @@ public class HttpNodeExecutor implements NodeExecutor {
 
             com.fasterxml.jackson.databind.JsonNode root =
                     JsonUtils.mapper().readTree(response.body());
+            if (root.isObject() && root.has("total_count")) {
+                // A search endpoint: the number of the matches is the count,
+                // the items are the page of the matches.
+                totalCount = root.path("total_count").asLong();
+                incompleteResults = root.path("incomplete_results").asBoolean(false);
+                com.fasterxml.jackson.databind.JsonNode items = root.path("items");
+                if (items.isArray()) {
+                    items.forEach(collected::add);
+                }
+                pagesFetched = page;
+                // The search endpoint never reports the last page, so the pages
+                // are counted by the number of the items.
+                hasNext = collected.size() < totalCount;
+                if (!hasNext) {
+                    break;
+                }
+                continue;
+            }
             if (!root.isArray()) {
                 // An endpoint that answers with an object (the repository for
                 // example) holds exactly one item and is never paginated.
@@ -244,16 +291,54 @@ public class HttpNodeExecutor implements NodeExecutor {
         }
 
         Map<String, Object> summary = new LinkedHashMap<>();
-        summary.put("count", collected.size());
+        // The search endpoint reports the number of the matches: that is the
+        // count of the issues, without the pull requests.
+        summary.put("count", totalCount != null ? totalCount : collected.size());
         List<Object> items = new ArrayList<>();
         for (int i = 0; i < Math.min(collected.size(), MAX_ITEMS); i++) {
             items.add(collected.get(i));
         }
         summary.put("items", items);
         summary.put("truncated", collected.size() > items.size());
+        if (totalCount != null) {
+            summary.put("totalCount", totalCount);
+            summary.put("incompleteResults", incompleteResults);
+            // The count of the search endpoint is the number of the matches, so
+            // it is exact — unless the search itself was incomplete.
+            summary.put("collection", searchCollectionMeta(
+                    pagesFetched, totalCount, incompleteResults,
+                    collected.size(), items.size()));
+            return summary;
+        }
         summary.put("collection", collectionMeta(pagesFetched, lastPage, !hasNext,
                 collected.size() > items.size(), collected.size(), items.size()));
         return summary;
+    }
+
+    /**
+     * Describes a search collection.
+     *
+     * <p>The count of a search endpoint is the number of the matches of the query, so it is
+     * exact. The items are only a sample of them, and the metadata states both.
+     */
+    private Map<String, Object> searchCollectionMeta(int pagesFetched, long totalCount,
+                                                     boolean incompleteResults,
+                                                     int collected, int analyzed) {
+        Map<String, Object> collection = new LinkedHashMap<>();
+        collection.put("source", "search");
+        collection.put("collectedAt", Instant.now().toString());
+        collection.put("pagesFetched", pagesFetched);
+        // The count is the number of the matches — exact, unless the search
+        // itself was incomplete.
+        boolean exact = !incompleteResults;
+        collection.put("complete", exact);
+        collection.put("countExact", exact);
+        collection.put("incompleteResults", incompleteResults);
+        collection.put("itemsSampled", collected < totalCount || analyzed < collected);
+        collection.put("collected", collected);
+        collection.put("analyzed", analyzed);
+        collection.put("totalCount", totalCount);
+        return collection;
     }
 
     /**
@@ -362,13 +447,27 @@ public class HttpNodeExecutor implements NodeExecutor {
         String repo = repoOf(input);
         String path = operation.path().replace("{owner}", owner).replace("{repo}", repo);
         Map<String, String> query = new LinkedHashMap<>(operation.query());
-        String state = stringConfig(config, "state");
-        if (state != null && !state.isBlank()) {
-            query.put("state", state);
-        }
-        Integer sinceDays = intConfigOrNull(config, "sinceDays");
-        if (sinceDays != null) {
-            query.put("since", Instant.now().minus(sinceDays, ChronoUnit.DAYS).toString());
+        if (operation.searchQuery() != null) {
+            // A search endpoint takes its query in the "q" parameter.
+            String search = operation.searchQuery()
+                    .replace("{owner}", owner)
+                    .replace("{repo}", repo);
+            String state = stringConfig(config, "state");
+            if (state != null && !state.isBlank()) {
+                // The state is part of the search query, so it replaces the one
+                // of the operation.
+                search = search.replaceAll("state:[a-z]+", "state:" + state);
+            }
+            query.put("q", search);
+        } else {
+            String state = stringConfig(config, "state");
+            if (state != null && !state.isBlank()) {
+                query.put("state", state);
+            }
+            Integer sinceDays = intConfigOrNull(config, "sinceDays");
+            if (sinceDays != null) {
+                query.put("since", Instant.now().minus(sinceDays, ChronoUnit.DAYS).toString());
+            }
         }
         return withQuery(GITHUB_API + path, query);
     }
@@ -380,7 +479,7 @@ public class HttpNodeExecutor implements NodeExecutor {
         Object url = config.get("url");
         if (url != null) {
             // An explicit url is not paginated.
-            return new Operation("", Map.of());
+            return new Operation("", Map.of(), null);
         }
         String operation = String.valueOf(config.getOrDefault("operation", "get_repository"));
         Operation resolved = OPERATIONS.get(operation);

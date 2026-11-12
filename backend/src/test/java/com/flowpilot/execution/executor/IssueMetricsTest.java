@@ -49,6 +49,35 @@ class IssueMetricsTest {
         return body;
     }
 
+    /**
+     * Builds the summary of a search response.
+     *
+     * <p>The search endpoint answers with the number of the matches of a query.
+     * The query carries {@code is:issue}, so the number does not contain the
+     * pull requests.
+     */
+    private Map<String, Object> searchSummary(long totalCount, boolean complete,
+                                               List<Map<String, Object>> items) {
+        Map<String, Object> collection = new LinkedHashMap<>();
+        collection.put("source", "search");
+        collection.put("collectedAt", "2026-11-12T10:00:00Z");
+        collection.put("pagesFetched", 1);
+        collection.put("complete", complete);
+        collection.put("countExact", complete);
+        collection.put("incompleteResults", !complete);
+        collection.put("itemsSampled", items.size() < totalCount);
+        collection.put("collected", items.size());
+        collection.put("analyzed", items.size());
+        collection.put("totalCount", totalCount);
+
+        Map<String, Object> body = new LinkedHashMap<>();
+        body.put("count", totalCount);
+        body.put("totalCount", totalCount);
+        body.put("items", items);
+        body.put("collection", collection);
+        return body;
+    }
+
     private Map<String, Object> nodeOutput(Map<String, Object> body) {
         Map<String, Object> output = new LinkedHashMap<>();
         output.put("statusCode", 200);
@@ -71,9 +100,9 @@ class IssueMetricsTest {
     @DisplayName("counts the open and the closed issues separately")
     void countsOpenAndClosedSeparately() {
         Map<String, Object> upstream = new LinkedHashMap<>();
-        upstream.put("collect_open_issues", nodeOutput(listSummary(42, true,
+        upstream.put("collect_open_issues", nodeOutput(searchSummary(42, true,
                 List.of(issue("1", "open", false), issue("2", "open", false)))));
-        upstream.put("collect_closed_issues", nodeOutput(listSummary(137, true,
+        upstream.put("collect_closed_issues", nodeOutput(searchSummary(137, true,
                 List.of(issue("3", "closed", false)))));
         upstream.put("collect_pull_requests", nodeOutput(listSummary(9, true,
                 List.of(issue("4", "open", true)))));
@@ -97,9 +126,9 @@ class IssueMetricsTest {
     @DisplayName("never presents a sampled count as the exact total")
     void marksSampledCounts() {
         Map<String, Object> upstream = new LinkedHashMap<>();
-        upstream.put("collect_open_issues", nodeOutput(listSummary(30, false,
+        upstream.put("collect_open_issues", nodeOutput(searchSummary(30, false,
                 List.of(issue("1", "open", false)))));
-        upstream.put("collect_closed_issues", nodeOutput(listSummary(10, false,
+        upstream.put("collect_closed_issues", nodeOutput(searchSummary(10, false,
                 List.of(issue("3", "closed", false)))));
         upstream.put("collect_pull_requests", nodeOutput(listSummary(5, true,
                 List.of(issue("4", "open", true)))));
@@ -136,9 +165,109 @@ class IssueMetricsTest {
 
         Map<String, Object> metrics = invokeIssueMetrics(context);
 
-        assertThat(metrics.get("openIssues")).isEqualTo(5L);
+        // The old collection mixes the pull requests into the issues, so its
+        // count is not the number of the issues: only the analysed issues are
+        // counted.
+        assertThat(metrics.get("openIssues")).isEqualTo(1L);
         // The pull requests are counted from the shared collection.
         assertThat(metrics.get("pullRequests")).isEqualTo(1L);
+    }
+
+    @Test
+    @DisplayName("the count of a list endpoint never contains the pull requests")
+    void theCountOfAListEndpointNeverContainsThePullRequests() {
+        // The GitHub issues endpoint answers with the issues AND the pull
+        // requests: a response of 100 objects of which 30 are pull requests
+        // carries a count of 100, and that count is not the number of the
+        // issues. The statistics must therefore never present it as such.
+        List<Map<String, Object>> items = new java.util.ArrayList<>();
+        for (int i = 0; i < 70; i++) {
+            items.add(issue(String.valueOf(i), "open", false));
+        }
+        for (int i = 0; i < 30; i++) {
+            items.add(issue("pr" + i, "open", true));
+        }
+
+        Map<String, Object> upstream = new LinkedHashMap<>();
+        upstream.put("collect_open_issues", nodeOutput(listSummary(100, true, items)));
+        upstream.put("collect_closed_issues", nodeOutput(listSummary(40, true,
+                List.of(issue("c1", "closed", false)))));
+        upstream.put("collect_pull_requests", nodeOutput(listSummary(30, true,
+                List.of(issue("p1", "open", true)))));
+
+        NodeContext context = NodeContext.builder()
+                .nodeKey("compute_metrics")
+                .config(Map.of("operation", "issue_metrics"))
+                .upstreamOutputs(upstream)
+                .build();
+
+        Map<String, Object> metrics = invokeIssueMetrics(context);
+
+        // The count of the list endpoint (100) contains the pull requests, so
+        // it is not used as the number of the issues.
+        assertThat(metrics.get("openIssues")).isEqualTo(70L);
+        assertThat(metrics.get("closedIssues")).isEqualTo(1L);
+        assertThat(metrics.get("totalIssues")).isEqualTo(71L);
+    }
+
+    @Test
+    @DisplayName("the count of a search endpoint is the number of the issues")
+    void theCountOfASearchEndpointIsTheNumberOfTheIssues() {
+        // The search query carries is:issue, so the count of the matches is
+        // the number of the issues — without the pull requests.
+        Map<String, Object> upstream = new LinkedHashMap<>();
+        upstream.put("collect_open_issues", nodeOutput(searchSummary(6167, true,
+                List.of(issue("1", "open", false), issue("2", "open", false)))));
+        upstream.put("collect_closed_issues", nodeOutput(searchSummary(2586, true,
+                List.of(issue("3", "closed", false)))));
+        upstream.put("collect_pull_requests", nodeOutput(listSummary(30, true,
+                List.of(issue("p1", "open", true)))));
+
+        NodeContext context = NodeContext.builder()
+                .nodeKey("compute_metrics")
+                .config(Map.of("operation", "issue_metrics"))
+                .upstreamOutputs(upstream)
+                .build();
+
+        Map<String, Object> metrics = invokeIssueMetrics(context);
+
+        assertThat(metrics.get("openIssues")).isEqualTo(6167L);
+        assertThat(metrics.get("closedIssues")).isEqualTo(2586L);
+        assertThat(metrics.get("totalIssues")).isEqualTo(8753L);
+        // The number of the analysed items is much smaller than the count: the
+        // report states both. The analysed items are the issues of the two
+        // collections and the one item of the pull request collection.
+        assertThat(metrics.get("analyzedItems")).isEqualTo(4);
+        assertThat(metrics.get("countsExact")).isEqualTo(true);
+    }
+
+    @Test
+    @DisplayName("the pull requests are counted from a query that matches them only")
+    void thePullRequestsAreCountedSeparately() {
+        Map<String, Object> upstream = new LinkedHashMap<>();
+        upstream.put("collect_open_issues", nodeOutput(searchSummary(6167, true,
+                List.of(issue("1", "open", false)))));
+        upstream.put("collect_closed_issues", nodeOutput(searchSummary(2586, true,
+                List.of(issue("3", "closed", false)))));
+        upstream.put("collect_pull_requests", nodeOutput(listSummary(30, true,
+                List.of(issue("p1", "open", true)))));
+        upstream.put("collect_pull_request_counts", nodeOutput(searchSummary(1368, true,
+                List.of(issue("p2", "open", true)))));
+
+        NodeContext context = NodeContext.builder()
+                .nodeKey("compute_metrics")
+                .config(Map.of("operation", "issue_metrics"))
+                .upstreamOutputs(upstream)
+                .build();
+
+        Map<String, Object> metrics = invokeIssueMetrics(context);
+
+        // The count of the pull request collection is the number of the items
+        // that were collected; the dedicated count is the number of the pull
+        // requests of the repository.
+        assertThat(metrics.get("pullRequests")).isEqualTo(1368L);
+        assertThat(metrics.get("openIssues")).isEqualTo(6167L);
+        assertThat(metrics.get("totalIssues")).isEqualTo(8753L);
     }
 
     /**

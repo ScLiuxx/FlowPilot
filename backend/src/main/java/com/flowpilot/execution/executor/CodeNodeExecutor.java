@@ -74,6 +74,7 @@ public class CodeNodeExecutor implements NodeExecutor {
                 upstreamAny(context, "collect_open_issues", "collect_issues").get("body"),
                 upstream(context, "collect_closed_issues").get("body"),
                 upstream(context, "collect_pull_requests").get("body"),
+                upstream(context, "collect_pull_request_counts").get("body"),
                 upstream(context, "collect_releases").get("body")));
         return output;
     }
@@ -139,21 +140,31 @@ public class CodeNodeExecutor implements NodeExecutor {
      * <p>The open issues, the closed issues and the pull requests are collected
      * separately: the issues endpoint only answers with the open issues by
      * default, so the closed ones would never show up in a single collection.
-     * The pull requests are counted from the pull request collection, which
-     * does not mix them with the issues.
      *
-     * <p>The numbers are the number of items that were collected. They are the
-     * totals of the repository only when the collection reached the last page;
-     * the metadata states which of the two it is.
+     * <p>The <em>count</em> comes from a collection that does not mix the pull
+     * requests into the issues: the GitHub issues endpoint answers with the
+     * issues <em>and</em> the pull requests, so its count is never the number of
+     * the issues. The search endpoint answers with the number of the matches of
+     * a query, and the query {@code is:issue} excludes the pull requests.
+     *
+     * <p>A collection without such a count (the old {@code collect_issues}
+     * node) falls back to the number of the items that were actually analysed:
+     * a count that may contain the pull requests is never presented as the
+     * number of the issues.
      */
     private Map<String, Object> issueMetrics(NodeContext context) {
         Map<String, Object> openPayload = upstreamAny(context, "collect_open_issues", "collect_issues");
         Map<String, Object> closedPayload = upstream(context, "collect_closed_issues");
         Map<String, Object> pullPayload = upstream(context, "collect_pull_requests");
+        // The pull requests are counted separately: the issues endpoint answers
+        // with the issues and the pull requests together, so the number of the
+        // pull requests would never be the number of the issues.
+        Map<String, Object> pullCountPayload = upstream(context, "collect_pull_request_counts");
 
         Object openBody = openPayload.get("body");
         Object closedBody = closedPayload.get("body");
         Object pullBody = pullPayload.get("body");
+        Object pullCountBody = pullCountPayload.get("body");
 
         List<Map<String, Object>> openItems = asList(openBody);
         List<Map<String, Object>> closedItems = asList(closedBody);
@@ -161,9 +172,16 @@ public class CodeNodeExecutor implements NodeExecutor {
 
         // The fallback collection (the old "collect_issues" node) holds the
         // open issues and the pull requests together.
-        long pullRequests = pullPayload.isEmpty()
-                ? openItems.stream().filter(issue -> issue.get("pull_request") != null).count()
-                : collectedCount(pullBody, pullItems);
+        long pullRequests;
+        if (!pullCountPayload.isEmpty()) {
+            // The count of the pull requests comes from a query that only
+            // matches the pull requests.
+            pullRequests = collectedCount(pullCountBody, pullItems);
+        } else if (pullPayload.isEmpty()) {
+            pullRequests = openItems.stream().filter(issue -> issue.get("pull_request") != null).count();
+        } else {
+            pullRequests = collectedCount(pullBody, pullItems);
+        }
 
         List<Map<String, Object>> openIssues = openItems.stream()
                 .filter(issue -> issue.get("pull_request") == null)
@@ -180,9 +198,12 @@ public class CodeNodeExecutor implements NodeExecutor {
                     .toList();
         }
 
-        long openCount = collectedCount(openBody, openIssues);
-        long closedCount = collectedCount(closedBody, closedIssues);
-        boolean exact = countIsExact(openBody) && countIsExact(closedBody) && countIsExact(pullBody);
+        // The number of the issues is only taken from a collection that does
+        // not mix the pull requests into them.
+        long openCount = issueCount(openBody, openIssues);
+        long closedCount = issueCount(closedBody, closedIssues);
+        boolean exact = countIsExact(openBody) && countIsExact(closedBody)
+                && (pullCountPayload.isEmpty() ? countIsExact(pullBody) : countIsExact(pullCountBody));
 
         Map<String, Object> output = new LinkedHashMap<>();
         output.put("totalItems", openCount + closedCount);
@@ -199,7 +220,7 @@ public class CodeNodeExecutor implements NodeExecutor {
                 .toList());
         // The numbers are only exact when every collection reached its last page.
         output.put("countsExact", exact);
-        output.put("collection", collectionMeta(openBody, closedBody, pullBody));
+        output.put("collection", collectionMeta(openBody, closedBody, pullBody, pullCountBody));
         return output;
     }
 
@@ -325,6 +346,26 @@ public class CodeNodeExecutor implements NodeExecutor {
     }
 
     /**
+     * The number of the issues of one collection.
+     *
+     * <p>A collection that answers with the number of the matches of a query
+     * ({@code source} is {@code search}) counts the issues only: its count is
+     * the number of the issues and is used as it is.
+     *
+     * <p>A list endpoint answers with the issues <em>and</em> the pull
+     * requests, so its count is not the number of the issues. Such a collection
+     * contributes the number of the issues that were actually analysed, which
+     * is never more than the real number.
+     */
+    private long issueCount(Object body, List<Map<String, Object>> analysedIssues) {
+        Map<String, Object> collection = collectionOf(body);
+        if ("search".equals(collection.get("source"))) {
+            return collectedCount(body, analysedIssues);
+        }
+        return analysedIssues.size();
+    }
+
+    /**
      * The number of items a collection gathered.
      *
      * <p>The count of the summary is the number the endpoint reported: the exact
@@ -356,8 +397,13 @@ public class CodeNodeExecutor implements NodeExecutor {
     /**
      * Merges the collection metadata of several responses.
      *
-     * <p>The merged metadata states whether <em>every</em> collection was
-     * complete, and it keeps the window the data was collected in.
+     * <p>The merged metadata keeps the two kinds of collection apart: a search
+     * endpoint reports the exact number of the matches, a list endpoint only
+     * the number of the items that were collected. The report therefore states
+     * for every number whether it is the total of the repository or a sample.
+     *
+     * <p>The metadata states whether <em>every</em> collection was complete, and
+     * it keeps the window the data was collected in.
      */
     private Map<String, Object> collectionMeta(Object... bodies) {
         Map<String, Object> merged = new LinkedHashMap<>();
@@ -366,6 +412,8 @@ public class CodeNodeExecutor implements NodeExecutor {
         String collectedAt = null;
         long collected = 0;
         long analyzed = 0;
+        int exactCollections = 0;
+        int sampledCollections = 0;
         Integer totalPages = null;
         for (Object body : bodies) {
             Map<String, Object> collection = collectionOf(body);
@@ -377,6 +425,9 @@ public class CodeNodeExecutor implements NodeExecutor {
             }
             if (Boolean.FALSE.equals(collection.get("countExact"))) {
                 exact = false;
+                sampledCollections++;
+            } else {
+                exactCollections++;
             }
             Object at = collection.get("collectedAt");
             if (collectedAt == null && at != null) {
@@ -392,6 +443,9 @@ public class CodeNodeExecutor implements NodeExecutor {
         merged.put("complete", complete);
         merged.put("countExact", exact);
         merged.put("sampled", !exact || !complete);
+        // The two kinds of collection, so that the report can tell them apart.
+        merged.put("exactCollections", exactCollections);
+        merged.put("sampledCollections", sampledCollections);
         merged.put("collected", collected);
         merged.put("analyzed", analyzed);
         if (collectedAt != null) {

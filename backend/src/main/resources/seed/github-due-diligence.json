@@ -26,7 +26,7 @@
       "name": "采集未关闭 Issue",
       "type": "HTTP",
       "dependencies": ["collect_repository"],
-      "config": { "operation": "get_open_issues", "perPage": 100, "maxPages": 3 },
+      "config": { "operation": "search_open_issues", "perPage": 100, "maxPages": 3 },
       "retryPolicy": { "maxAttempts": 3, "initialDelaySeconds": 2, "maxDelaySeconds": 30, "multiplier": 2.0 },
       "timeoutPolicy": { "timeoutSeconds": 30 }
     },
@@ -35,7 +35,7 @@
       "name": "采集已关闭 Issue",
       "type": "HTTP",
       "dependencies": ["collect_repository"],
-      "config": { "operation": "get_closed_issues", "perPage": 100, "maxPages": 3 },
+      "config": { "operation": "search_closed_issues", "perPage": 100, "maxPages": 3 },
       "retryPolicy": { "maxAttempts": 3, "initialDelaySeconds": 2, "maxDelaySeconds": 30, "multiplier": 2.0 },
       "timeoutPolicy": { "timeoutSeconds": 30 }
     },
@@ -45,6 +45,15 @@
       "type": "HTTP",
       "dependencies": ["collect_repository"],
       "config": { "operation": "get_pull_requests", "perPage": 100, "maxPages": 3 },
+      "retryPolicy": { "maxAttempts": 3, "initialDelaySeconds": 2, "maxDelaySeconds": 30, "multiplier": 2.0 },
+      "timeoutPolicy": { "timeoutSeconds": 30 }
+    },
+    {
+      "id": "collect_pull_request_counts",
+      "name": "统计 Pull Request 数量",
+      "type": "HTTP",
+      "dependencies": ["collect_repository"],
+      "config": { "operation": "search_open_pull_requests", "perPage": 1, "maxPages": 1 },
       "retryPolicy": { "maxAttempts": 3, "initialDelaySeconds": 2, "maxDelaySeconds": 30, "multiplier": 2.0 },
       "timeoutPolicy": { "timeoutSeconds": 30 }
     },
@@ -67,6 +76,7 @@
         "collect_open_issues",
         "collect_closed_issues",
         "collect_pull_requests",
+        "collect_pull_request_counts",
         "collect_releases"
       ],
       "config": { "operation": "all_metrics" },

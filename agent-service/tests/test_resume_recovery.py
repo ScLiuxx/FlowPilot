@@ -12,12 +12,12 @@ thread and checkpoint.
 
 from __future__ import annotations
 
+import asyncio
 from datetime import timedelta
 
 from app.messaging.events import AgentExecutePayload, AgentResumePayload
 from app.persistence.repository import (
     RESUME_CLAIMED,
-    RESUME_RECOVERABLE,
     STATUS_SUCCEEDED,
     InMemoryExecutionRecordStore,
 )
@@ -194,37 +194,55 @@ async def test_the_takeover_is_limited(executor, store, settings):
     assert outcome.payload["errorCode"] == "AG-RESUME-TOKEOVER-LIMIT-001"
     assert outcome.payload["retryable"] is True
 
-    # The ledger records that the resume may be recovered by hand: the thread
-    # and its checkpoint are still there.
+    # The ledger and the invocation reach the same terminal state, so the two
+    # state machines never contradict each other. The checkpoint of the thread
+    # is kept, so the run can still be examined.
     ledger = await store.get_resume(30001, "resume-001")
     assert ledger is not None
-    assert ledger.status == RESUME_RECOVERABLE
+    assert ledger.status == "FAILED"
+
+    invocation = await store.get(30001)
+    assert invocation is not None
+    assert invocation.status == "FAILED"
 
 
-async def test_a_recoverable_resume_can_be_taken_over(executor, store, settings):
-    """A resume that was given up can be continued again."""
+async def test_a_given_up_resume_is_not_taken_over(executor, store, settings):
+    """A resume that was given up is over — it is not continued again."""
     await _interrupt_the_agent(executor)
 
-    record, created = await store.create_resume(
+    settings.resume_max_takeovers = 1
+    record, _ = await store.create_resume(
         invocation_id=30001,
         resume_request_id="resume-001",
         thread_id="flowpilot-30001",
-        status=RESUME_RECOVERABLE,
+        status=RESUME_CLAIMED,
         payload={},
         lease_expire_at=_utcnow() - timedelta(seconds=1),
     )
-    assert created is True
-
-    resume_envelope = make_resume_envelope()
-    outcome = await executor.resume(
-        resume_envelope, AgentResumePayload.model_validate(resume_envelope.payload)
+    await store.claim_resume_lease(
+        30001,
+        "resume-001",
+        lease_expire_at=_utcnow() - timedelta(seconds=1),
+        expected_lease_token=record.lease_token,
     )
 
-    assert outcome.status == "COMPLETED"
+    resume_envelope = make_resume_envelope()
+    first = await executor.resume(
+        resume_envelope, AgentResumePayload.model_validate(resume_envelope.payload)
+    )
+    assert first.status == "FAILED"
+
+    # A redelivery of the command must not continue the thread a second time:
+    # the ledger carries the recorded error.
+    second = await executor.resume(
+        resume_envelope, AgentResumePayload.model_validate(resume_envelope.payload)
+    )
+    assert second.status == "FAILED"
 
     ledger = await store.get_resume(30001, "resume-001")
     assert ledger is not None
-    assert ledger.status == "COMPLETED"
+    assert ledger.status == "FAILED"
+    # The thread was not continued again.
     assert ledger.takeover_count == 1
 
 
@@ -304,6 +322,64 @@ async def test_the_lease_of_a_running_resume_is_renewed(executor, store, setting
     ledger = await store.get_resume(30001, "resume-001")
     assert ledger is not None
     assert ledger.lease_expire_at is None
+
+
+async def test_the_worker_stops_when_the_lease_cannot_be_confirmed(executor, store, settings):
+    """A worker that cannot reach the database stops the thread.
+
+    The lease fences the workers against each other. A worker that cannot
+    renew its lease cannot prove that it still owns the thread, and another
+    worker may take it over — so the worker that cannot confirm the lease
+    stops instead of running a thread whose ownership it does not know.
+    """
+    await _interrupt_the_agent(executor)
+
+    settings.resume_lease_seconds = 3
+    settings.resume_lease_renew_failures = 2
+
+    original = store.renew_resume_lease
+    failures = {"count": 0}
+
+    async def failing_renew(invocation_id, resume_request_id, *, lease_token, lease_expire_at):
+        failures["count"] += 1
+        raise RuntimeError("the database is not reachable")
+
+    store.renew_resume_lease = failing_renew
+    try:
+        # The renewer of the lease is driven on its own: the graph of the test
+        # finishes long before the first renewal would happen.
+        renewer = asyncio.create_task(
+            executor._renew_resume_lease(30001, "resume-001", 1)
+        )
+        await asyncio.sleep(4)
+        renewer.cancel()
+        try:
+            await renewer
+        except asyncio.CancelledError:
+            pass
+    finally:
+        store.renew_resume_lease = original
+
+    # The worker gave up after the configured number of failed renewals.
+    assert failures["count"] == settings.resume_lease_renew_failures
+
+
+async def test_the_worker_stops_when_the_lease_was_taken_over(executor, store, settings):
+    """A worker whose lease was taken over stops the thread."""
+    await _interrupt_the_agent(executor)
+
+    settings.resume_lease_seconds = 3
+
+    async def lost_renew(invocation_id, resume_request_id, *, lease_token, lease_expire_at):
+        # The lease was taken over by another worker.
+        return False
+
+    store.renew_resume_lease = lost_renew
+    renewer = asyncio.create_task(
+        executor._renew_resume_lease(30001, "resume-001", 1)
+    )
+    await asyncio.sleep(4)
+    assert renewer.done(), "the renewer must stop when the lease was lost"
 
 
 async def test_the_store_claims_the_lease_only_once(store: InMemoryExecutionRecordStore):

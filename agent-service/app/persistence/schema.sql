@@ -48,9 +48,12 @@ COMMENT ON TABLE agent_execution_record IS
 -- The lifecycle of the row:
 --   CLAIMED      a worker owns the lease and continues the graph
 --   PROCESSING   the same, written by an older version of the service
---   RECOVERABLE  the automatic takeover was given up; the thread and its
---                checkpoint are intact, the request may be continued again
 --   <outcome>    COMPLETED / FAILED / INTERRUPTED, the result of the resume
+--
+-- The ledger and the invocation always reach the same state: a request that
+-- was given up carries FAILED, exactly like the invocation it belongs to. The
+-- two state machines therefore never contradict each other. The checkpoint of
+-- the thread is kept, so the run can still be examined.
 CREATE TABLE IF NOT EXISTS agent_resume_record
 (
     id                BIGSERIAL PRIMARY KEY,

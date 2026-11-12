@@ -261,7 +261,10 @@ async def main() -> int:
     start_worker()
 
     status = await wait_for(
-        lambda: (s or "") if (s := invocation_status()) else None, timeout=180
+        lambda: invocation_status()
+        if invocation_status() in ("SUCCEEDED", "COMPLETED")
+        else None,
+        timeout=180,
     )
     if status not in ("SUCCEEDED", "COMPLETED"):
         print(f"  FAIL  the invocation did not complete: status={status}", flush=True)

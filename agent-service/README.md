@@ -124,6 +124,10 @@ docker run --rm -p 8000:8000 \
 | `RESUME_LEASE_SECONDS` | `30` | how long a worker may continue a paused thread |
 | `RESUME_LEASE_WAIT_SECONDS` | `15` | how long a delivery waits for the lease of a resume |
 | `RESUME_MAX_TAKEOVERS` | `3` | how often a resume may be taken over before it is given up |
+| `RESUME_LEASE_RENEW_FAILURES` | `3` | failed renewals before the worker stops the thread |
+| `RESUME_RECOVERY_SCAN_SECONDS` | `15.0` | interval of the recovery scanner |
+| `RESUME_RECOVERY_BATCH_SIZE` | `20` | stale requests the scanner recovers in one pass |
+| `RESUME_RECOVERY_LEASE_GRACE_SECONDS` | `10` | grace period between the expiry of a lease and the recovery |
 | `CANCEL_POLL_SECONDS` | `2.0` | how often a running agent reads the cancel state |
 | `PROTOCOL_SCHEMA_DIR` | auto detected | directory of the shared JSON Schema files |
 | `OTEL_ENABLED` | `true` | `false` → no OpenTelemetry spans |
@@ -222,12 +226,14 @@ The ledger therefore carries a **lease**:
 * A delivery that finds a **live** lease belongs to a worker that is still
   working. It waits for the lease and gives up if the owner finishes in the
   meantime.
+* A worker that cannot renew its lease — the database is not reachable — cannot
+  prove that it still owns the thread. It stops after
+  `RESUME_LEASE_RENEW_FAILURES` failed renewals, because another worker may
+  take the thread over.
 * A resume that was taken over too often (`RESUME_MAX_TAKEOVERS`) is given up
-  with `AG-RESUME-TOKEOVER-LIMIT-001` instead of looping forever. Its ledger row
-  is marked `RECOVERABLE`: the thread and its checkpoint are intact, so the
-  request may be continued again once the cause is gone. The takeover limit
-  only guards the *takeover* — a delivery that finds a live lease never gives
-  the resume up.
+  with `AG-RESUME-TOKEOVER-LIMIT-001` instead of looping forever. The takeover
+  limit only guards the *takeover* — a delivery that finds a live lease never
+  gives the resume up.
 
 The lifecycle of a ledger row:
 
@@ -235,11 +241,35 @@ The lifecycle of a ledger row:
 |---|---|
 | `CLAIMED` | a worker owns the lease and continues the graph |
 | `PROCESSING` | the same, written by an older version of the service |
-| `RECOVERABLE` | the automatic takeover was given up, the request may be continued again |
 | `COMPLETED` / `FAILED` / `INTERRUPTED` | the result of the resume |
 
-`tests/test_resume_recovery.py` and `tests/test_postgres_integration.py` assert
-the takeover, the fencing, the limit and the recoverable state.
+The ledger and the invocation always reach the **same** state: a request that
+was given up carries `FAILED`, exactly like the invocation it belongs to, and
+the two state machines never contradict each other. The checkpoint of the
+thread is kept, so the run can still be examined.
+
+#### The recovery scanner
+
+The takeover above needs a delivery: the broker redelivers the command when a
+worker dies. That is not guaranteed. A worker that loses its connection to the
+broker but keeps running holds the lease; a duplicate delivery finds the live
+lease, waits for it and gives up, and the consumer acknowledges that message.
+When the worker finally dies, nothing is left in the broker to trigger the
+takeover.
+
+The **recovery scanner** closes that gap. It walks the ledger on its own
+(`RESUME_RECOVERY_SCAN_SECONDS`), finds the requests whose lease expired and
+re-publishes their command. It checks the state of the invocation and that the
+checkpoint of the thread still exists before it does so.
+
+The scanner does **not** claim the lease: the lease fences the workers against
+each other, so it has to be acquired by the consumer that continues the thread.
+Two scanners of two replicas may therefore publish the same command — the
+lease decides which one continues the thread.
+
+`tests/test_resume_recovery.py`, `tests/test_resume_recovery_scanner.py` and
+`tests/test_postgres_integration.py` assert the takeover, the fencing, the
+limit and the scanner.
 
 ### 3.6 The cancellation of a running agent
 

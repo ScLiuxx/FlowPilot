@@ -17,8 +17,12 @@ import java.util.List;
  * Publishes the bundled example workflow on start-up.
  *
  * <p>The seed goes through the regular create and publish path, so the definition hash is
- * computed by the same code that a user created workflow goes through. The workflow is only
- * created when it does not exist yet, so a restart never touches a published version.
+ * computed by the same code that a user created workflow goes through.
+ *
+ * <p>The seed is only created when it does not exist yet. When the bundled definition changed
+ * since the last start-up, a new version is published: a published version can never be changed,
+ * so the seed has to be versioned like any other workflow. A definition that is identical to the
+ * latest published one is left alone.
  */
 @Slf4j
 @Component
@@ -44,19 +48,40 @@ public class SeedWorkflowInitializer implements ApplicationRunner {
             WorkflowDefinitionDocument document = loadSeed();
             List<com.flowpilot.workflow.entity.WorkflowDefinition> existing =
                     workflowService.page(1, 50, null, document.getName(), null).getRecords();
-            if (!existing.isEmpty()) {
-                log.info("the seed workflow already exists, skipping");
+            if (existing.isEmpty()) {
+                var definition = workflowService.create(document.getName(), document.getDescription(),
+                        "GITHUB_DUE_DILIGENCE", ownerId, document);
+                var version = workflowService.listVersions(definition.getId()).get(0);
+                workflowService.publish(definition.getId(), version.getId(), ownerId);
+                log.info("the seed workflow was published, workflowId={}", definition.getId());
                 return;
             }
-            var definition = workflowService.create(document.getName(), document.getDescription(),
-                    "GITHUB_DUE_DILIGENCE", ownerId, document);
-            var version = workflowService.listVersions(definition.getId()).get(0);
-            workflowService.publish(definition.getId(), version.getId(), ownerId);
-            log.info("the seed workflow was published, workflowId={}", definition.getId());
+            publishNewVersionIfChanged(existing.get(0).getId(), document);
         } catch (Exception ex) {
             // A failing seed must not stop the platform from starting.
             log.warn("the seed workflow could not be published: {}", ex.getMessage());
         }
+    }
+
+    /**
+     * Publishes a new version of the seed when the bundled definition changed.
+     *
+     * <p>The definitions are compared by their hash, which is the same comparison the regular
+     * version creation makes. An unchanged seed therefore does not produce a new version on every
+     * start-up.
+     */
+    private void publishNewVersionIfChanged(Long workflowId, WorkflowDefinitionDocument document) {
+        String hash = JsonUtils.sha256Hex(JsonUtils.canonicalize(document));
+        boolean known = workflowService.listVersions(workflowId).stream()
+                .anyMatch(version -> hash.equals(version.getDefinitionHash()));
+        if (known) {
+            log.info("the seed workflow already exists and is up to date, skipping");
+            return;
+        }
+        var version = workflowService.createVersion(workflowId, document, ownerId);
+        workflowService.publish(workflowId, version.getId(), ownerId);
+        log.info("the seed workflow changed, version {} was published, workflowId={}",
+                version.getVersion(), workflowId);
     }
 
     private WorkflowDefinitionDocument loadSeed() {
