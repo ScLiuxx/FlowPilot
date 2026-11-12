@@ -364,6 +364,9 @@ public class CodeNodeExecutor implements NodeExecutor {
         boolean complete = true;
         boolean exact = true;
         String collectedAt = null;
+        long collected = 0;
+        long analyzed = 0;
+        Integer totalPages = null;
         for (Object body : bodies) {
             Map<String, Object> collection = collectionOf(body);
             if (collection.isEmpty()) {
@@ -379,14 +382,32 @@ public class CodeNodeExecutor implements NodeExecutor {
             if (collectedAt == null && at != null) {
                 collectedAt = String.valueOf(at);
             }
+            collected += asLong(collection.get("collected"));
+            analyzed += asLong(collection.get("analyzed"));
+            Object pages = collection.get("totalPages");
+            if (pages instanceof Number number) {
+                totalPages = totalPages == null ? number.intValue() : Math.max(totalPages, number.intValue());
+            }
         }
         merged.put("complete", complete);
         merged.put("countExact", exact);
         merged.put("sampled", !exact || !complete);
+        merged.put("collected", collected);
+        merged.put("analyzed", analyzed);
         if (collectedAt != null) {
             merged.put("collectedAt", collectedAt);
         }
+        if (totalPages != null) {
+            merged.put("totalPages", totalPages);
+        }
         return merged;
+    }
+
+    private long asLong(Object value) {
+        if (value instanceof Number number) {
+            return number.longValue();
+        }
+        return 0L;
     }
 
     private Object nested(Map<String, Object> source, String... keys) {

@@ -23,18 +23,22 @@ public interface AnalysisReportMapper extends BaseMapper<AnalysisReport> {
      * <p>A report belongs to the user of its execution, so the list has to join the execution
      * table. Filtering only on the report table would expose the reports of every user.
      *
+     * <p>The join is always there and the user filter is a condition on it: an administrator
+     * passes no user id and therefore sees the reports of everybody.
+     *
      * @param userId the owner of the executions, {@code null} returns the reports of everybody
      */
     @Select("""
             <script>
             SELECT r.* FROM analysis_report r
-             <if test="userId != null">
               JOIN workflow_execution e ON e.id = r.workflow_execution_id
-              WHERE e.user_id = #{userId}
-             </if>
-             <if test="status != null and status != ''">
-               AND r.status = #{status}
-             </if>
+             WHERE 1 = 1
+               <if test="userId != null">
+                 AND e.user_id = #{userId}
+               </if>
+               <if test="status != null and status != ''">
+                 AND r.status = #{status}
+               </if>
              ORDER BY r.created_at DESC
              LIMIT #{limit} OFFSET #{offset}
             </script>
@@ -50,13 +54,14 @@ public interface AnalysisReportMapper extends BaseMapper<AnalysisReport> {
     @Select("""
             <script>
             SELECT COUNT(*) FROM analysis_report r
-             <if test="userId != null">
               JOIN workflow_execution e ON e.id = r.workflow_execution_id
-              WHERE e.user_id = #{userId}
-             </if>
-             <if test="status != null and status != ''">
-               AND r.status = #{status}
-             </if>
+             WHERE 1 = 1
+               <if test="userId != null">
+                 AND e.user_id = #{userId}
+               </if>
+               <if test="status != null and status != ''">
+                 AND r.status = #{status}
+               </if>
             </script>
             """)
     long countByOwner(@Param("userId") Long userId, @Param("status") String status);

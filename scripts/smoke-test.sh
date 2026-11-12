@@ -7,6 +7,9 @@ set -euo pipefail
 
 BASE_URL=${BASE_URL:-http://127.0.0.1:8080}
 LOG_DIR=${LOG_DIR:-/tmp/flowpilot-logs}
+# The seed definition is read from the file, so the script works from any directory.
+SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+SEED_FILE=${SEED_FILE:-$SCRIPT_DIR/../backend/src/main/resources/seed/github-due-diligence.json}
 mkdir -p "$LOG_DIR"
 
 pass() { echo "  PASS  $1"; }
@@ -59,8 +62,8 @@ VALIDATE=$(curl -fsS -X POST "$BASE_URL/api/v1/workflows/validate" \
   -H "$AUTH" -H 'Content-Type: application/json' \
   -d "$(python3 -c '
 import json,sys
-doc = json.load(open("src/main/resources/seed/github-due-diligence.json"))
-print(json.dumps({"definition": doc}))')")
+doc = json.load(open(sys.argv[1]))
+print(json.dumps({"definition": doc}))' "$SEED_FILE")")
 echo "$VALIDATE" | grep -q '"valid":true' || fail "the seed definition did not validate: $VALIDATE"
 pass "the DAG validates"
 

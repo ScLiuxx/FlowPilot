@@ -24,7 +24,11 @@ if [ ! -f "$JAR" ]; then
 fi
 
 cd "$BACKEND_DIR" || exit 1
-setsid nohup java \
+# The token of the GitHub API raises the rate limit. Without it the public
+# limit applies and the collection nodes fail with a rate limit error.
+setsid nohup env \
+  GITHUB_TOKEN="${GITHUB_TOKEN:-${GH_TOKEN:-}}" \
+  java \
   -Dhttp.proxyHost="$PROXY_HOST" \
   -Dhttp.proxyPort="$PROXY_PORT" \
   -jar "$JAR" "$@" > "$LOG" 2>&1 < /dev/null &

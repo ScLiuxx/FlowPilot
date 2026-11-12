@@ -223,10 +223,23 @@ The ledger therefore carries a **lease**:
   working. It waits for the lease and gives up if the owner finishes in the
   meantime.
 * A resume that was taken over too often (`RESUME_MAX_TAKEOVERS`) is given up
-  with `AG-RESUME-TOKEOVER-LIMIT-001` instead of looping forever.
+  with `AG-RESUME-TOKEOVER-LIMIT-001` instead of looping forever. Its ledger row
+  is marked `RECOVERABLE`: the thread and its checkpoint are intact, so the
+  request may be continued again once the cause is gone. The takeover limit
+  only guards the *takeover* — a delivery that finds a live lease never gives
+  the resume up.
+
+The lifecycle of a ledger row:
+
+| Status | Meaning |
+|---|---|
+| `CLAIMED` | a worker owns the lease and continues the graph |
+| `PROCESSING` | the same, written by an older version of the service |
+| `RECOVERABLE` | the automatic takeover was given up, the request may be continued again |
+| `COMPLETED` / `FAILED` / `INTERRUPTED` | the result of the resume |
 
 `tests/test_resume_recovery.py` and `tests/test_postgres_integration.py` assert
-the takeover, the fencing and the limit.
+the takeover, the fencing, the limit and the recoverable state.
 
 ### 3.6 The cancellation of a running agent
 

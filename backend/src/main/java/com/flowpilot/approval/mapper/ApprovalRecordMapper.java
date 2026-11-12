@@ -47,6 +47,54 @@ public interface ApprovalRecordMapper extends BaseMapper<ApprovalRecord> {
     java.util.List<ApprovalRecord> findPending(@Param("limit") int limit);
 
     /**
+     * The approvals of the executions of one user.
+     *
+     * <p>An approval belongs to the execution it belongs to, and an execution belongs to the user
+     * that started it. Filtering only on the approval table would expose the approvals of every
+     * user, therefore the list has to join the execution table.
+     *
+     * <p>The join is always there and the user filter is a condition on it: an administrator
+     * passes no user id and therefore sees the approvals of everybody.
+     */
+    @Select("""
+            <script>
+            SELECT a.* FROM approval_record a
+              JOIN workflow_execution e ON e.id = a.workflow_execution_id
+             WHERE 1 = 1
+               <if test="userId != null">
+                 AND e.user_id = #{userId}
+               </if>
+               <if test="status != null and status != ''">
+                 AND a.status = #{status}
+               </if>
+             ORDER BY a.created_at DESC
+             LIMIT #{limit} OFFSET #{offset}
+            </script>
+            """)
+    java.util.List<ApprovalRecord> findByOwner(@Param("userId") Long userId,
+                                               @Param("status") String status,
+                                               @Param("limit") int limit,
+                                               @Param("offset") int offset);
+
+    /**
+     * The number of the approvals of the executions of one user.
+     */
+    @Select("""
+            <script>
+            SELECT COUNT(*) FROM approval_record a
+              JOIN workflow_execution e ON e.id = a.workflow_execution_id
+             WHERE 1 = 1
+               <if test="userId != null">
+                 AND e.user_id = #{userId}
+               </if>
+               <if test="status != null and status != ''">
+                 AND a.status = #{status}
+               </if>
+            </script>
+            """)
+    long countByOwner(@Param("userId") Long userId, @Param("status") String status);
+
+    /**
      * The approvals whose deadline elapsed.
      *
      * <p>An approval without a deadline never expires, so the condition on the deadline is

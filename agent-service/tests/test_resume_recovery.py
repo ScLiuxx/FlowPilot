@@ -17,6 +17,7 @@ from datetime import timedelta
 from app.messaging.events import AgentExecutePayload, AgentResumePayload
 from app.persistence.repository import (
     RESUME_CLAIMED,
+    RESUME_RECOVERABLE,
     STATUS_SUCCEEDED,
     InMemoryExecutionRecordStore,
 )
@@ -121,6 +122,44 @@ async def test_a_live_lease_is_not_taken_over(executor, store, settings):
     assert ledger.lease_token == 1
 
 
+async def test_a_live_lease_is_never_given_up(executor, store, settings):
+    """The takeover limit does not apply to a worker that is still working.
+
+    The limit guards the *takeover*. A delivery that finds a live lease belongs
+    to a worker that is still working: it must not fail the invocation, and it
+    must not touch the ledger.
+    """
+    await _interrupt_the_agent(executor)
+
+    settings.resume_max_takeovers = 0
+    record, created = await store.create_resume(
+        invocation_id=30001,
+        resume_request_id="resume-001",
+        thread_id="flowpilot-30001",
+        status=RESUME_CLAIMED,
+        payload={},
+        lease_expire_at=_utcnow() + timedelta(seconds=300),
+    )
+    assert created is True
+
+    settings.resume_lease_wait_seconds = 0
+    settings.resume_lease_seconds = 0
+    resume_envelope = make_resume_envelope()
+    outcome = await executor.resume(
+        resume_envelope, AgentResumePayload.model_validate(resume_envelope.payload)
+    )
+
+    assert outcome.duplicate is True
+    assert outcome.publish is False
+
+    # The ledger is untouched: the owner keeps its lease.
+    ledger = await store.get_resume(30001, "resume-001")
+    assert ledger is not None
+    assert ledger.status == RESUME_CLAIMED
+    assert ledger.lease_token == 1
+    assert ledger.takeover_count == 0
+
+
 async def test_the_takeover_is_limited(executor, store, settings):
     """A resume that keeps killing its worker is given up."""
     await _interrupt_the_agent(executor)
@@ -154,6 +193,39 @@ async def test_the_takeover_is_limited(executor, store, settings):
     assert outcome.status == "FAILED"
     assert outcome.payload["errorCode"] == "AG-RESUME-TOKEOVER-LIMIT-001"
     assert outcome.payload["retryable"] is True
+
+    # The ledger records that the resume may be recovered by hand: the thread
+    # and its checkpoint are still there.
+    ledger = await store.get_resume(30001, "resume-001")
+    assert ledger is not None
+    assert ledger.status == RESUME_RECOVERABLE
+
+
+async def test_a_recoverable_resume_can_be_taken_over(executor, store, settings):
+    """A resume that was given up can be continued again."""
+    await _interrupt_the_agent(executor)
+
+    record, created = await store.create_resume(
+        invocation_id=30001,
+        resume_request_id="resume-001",
+        thread_id="flowpilot-30001",
+        status=RESUME_RECOVERABLE,
+        payload={},
+        lease_expire_at=_utcnow() - timedelta(seconds=1),
+    )
+    assert created is True
+
+    resume_envelope = make_resume_envelope()
+    outcome = await executor.resume(
+        resume_envelope, AgentResumePayload.model_validate(resume_envelope.payload)
+    )
+
+    assert outcome.status == "COMPLETED"
+
+    ledger = await store.get_resume(30001, "resume-001")
+    assert ledger is not None
+    assert ledger.status == "COMPLETED"
+    assert ledger.takeover_count == 1
 
 
 async def test_a_worker_that_lost_the_lease_publishes_nothing(executor, store):

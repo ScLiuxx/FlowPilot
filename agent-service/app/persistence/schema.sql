@@ -40,10 +40,17 @@ COMMENT ON TABLE agent_execution_record IS
 -- result instead of resuming the graph a second time.
 --
 -- The lease columns make the resume recoverable: a worker that dies while it
--- continues the graph leaves the row in PROCESSING, and another worker may
--- take it over once the lease expired. Without the lease the resume would be
--- stuck forever, because the redelivered message would see PROCESSING and
--- give up.
+-- continues the graph leaves the row in CLAIMED with an expired lease, and
+-- another worker may take it over once the lease expired. Without the lease the
+-- resume would be stuck forever, because the redelivered message would see the
+-- claim and give up.
+--
+-- The lifecycle of the row:
+--   CLAIMED      a worker owns the lease and continues the graph
+--   PROCESSING   the same, written by an older version of the service
+--   RECOVERABLE  the automatic takeover was given up; the thread and its
+--                checkpoint are intact, the request may be continued again
+--   <outcome>    COMPLETED / FAILED / INTERRUPTED, the result of the resume
 CREATE TABLE IF NOT EXISTS agent_resume_record
 (
     id                BIGSERIAL PRIMARY KEY,

@@ -53,6 +53,13 @@ RESUME_RECOVERABLE = "RECOVERABLE"
 #: The states of a resume request that mean "the graph is being continued".
 RESUME_IN_FLIGHT = frozenset({RESUME_CLAIMED, RESUME_PROCESSING})
 
+#: The states a resume request can be taken over from.
+#:
+#: A recoverable request is not being continued by anybody: the automatic
+#: takeover was given up, and the request may be continued again once the cause
+#: is gone. The thread and its checkpoint are still intact.
+RESUME_CLAIMABLE = frozenset({RESUME_CLAIMED, RESUME_PROCESSING, RESUME_RECOVERABLE})
+
 #: Lifecycle of an outbox row.
 OUTBOX_PENDING = "PENDING"
 OUTBOX_PUBLISHING = "PUBLISHING"
@@ -267,6 +274,7 @@ class ExecutionRecordStore(Protocol):
         status: str,
         payload: dict[str, Any] | None = None,
         checkpoint_id: str | None = None,
+        lease_token: int | None = None,
     ) -> ResumeRecord | None: ...
 
     async def claim_resume_lease(
@@ -583,10 +591,14 @@ class InMemoryExecutionRecordStore:
         status: str,
         payload: dict[str, Any] | None = None,
         checkpoint_id: str | None = None,
+        lease_token: int | None = None,
     ) -> ResumeRecord | None:
         async with self._lock:
             record = self._resumes.get((invocation_id, resume_request_id))
             if record is None:
+                return None
+            if lease_token is not None and record.lease_token != lease_token:
+                # The lease was taken over: this worker is not the owner anymore.
                 return None
             record.status = status
             if payload is not None:
@@ -609,7 +621,7 @@ class InMemoryExecutionRecordStore:
             if record is None:
                 return None
             now = datetime.now(tz=timezone.utc)
-            if record.status not in RESUME_IN_FLIGHT:
+            if record.status not in RESUME_CLAIMABLE:
                 return None
             if expected_lease_token is not None and record.lease_token != expected_lease_token:
                 # Another worker already took the lease over.
@@ -1169,6 +1181,7 @@ class PostgresExecutionRecordStore:
         status: str,
         payload: dict[str, Any] | None = None,
         checkpoint_id: str | None = None,
+        lease_token: int | None = None,
     ) -> ResumeRecord | None:
         pool = self._require_pool()
         async with pool.connection() as conn:
@@ -1181,11 +1194,20 @@ class PostgresExecutionRecordStore:
                         checkpoint_id = COALESCE(%s, checkpoint_id),
                         updated_at = now()
                     WHERE invocation_id = %s AND resume_request_id = %s
+                      AND (%s::bigint IS NULL OR lease_token = %s::bigint)
                     RETURNING invocation_id, resume_request_id, thread_id, status, payload,
                               checkpoint_id, lease_token, lease_expire_at, takeover_count,
                               created_at, updated_at
                     """,
-                    (status, _json(payload), checkpoint_id, invocation_id, resume_request_id),
+                    (
+                        status,
+                        _json(payload),
+                        checkpoint_id,
+                        invocation_id,
+                        resume_request_id,
+                        lease_token,
+                        lease_token,
+                    ),
                 )
                 row = await cur.fetchone()
                 await conn.commit()
@@ -1230,7 +1252,7 @@ class PostgresExecutionRecordStore:
                         RESUME_CLAIMED,
                         invocation_id,
                         resume_request_id,
-                        list(RESUME_IN_FLIGHT),
+                        list(RESUME_CLAIMABLE),
                         expected_lease_token,
                         expected_lease_token,
                     ),

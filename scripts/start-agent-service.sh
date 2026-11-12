@@ -21,11 +21,13 @@ if [ ! -x "$VENV/bin/python" ]; then
 fi
 
 cd "$AGENT_DIR" || exit 1
+# The token of the GitHub API is inherited from the environment: without it the
+# public rate limit applies and the analysis fails with a rate limit error.
 setsid nohup env \
   RABBITMQ_URL="amqp://flowpilot:flowpilot@127.0.0.1:5672/" \
   POSTGRES_DSN="postgresql://flowpilot:flowpilot@127.0.0.1:5432/flowpilot_agent" \
   REDIS_URL="${REDIS_URL:-redis://127.0.0.1:6379/0}" \
-  GITHUB_TOKEN="${GITHUB_TOKEN:-}" \
+  GITHUB_TOKEN="${GITHUB_TOKEN:-${GH_TOKEN:-}}" \
   HTTP_PROXY="${HTTP_PROXY:-}" \
   HTTPS_PROXY="${HTTPS_PROXY:-}" \
   INTERNAL_API_TOKEN="${INTERNAL_API_TOKEN:-}" \

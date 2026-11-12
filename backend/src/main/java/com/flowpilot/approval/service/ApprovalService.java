@@ -1,7 +1,5 @@
 package com.flowpilot.approval.service;
 
-import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
-import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.flowpilot.agent.entity.AgentInvocation;
 import com.flowpilot.agent.mapper.AgentInvocationMapper;
 import com.flowpilot.agent.service.AgentInvocationService;
@@ -340,19 +338,11 @@ public class ApprovalService {
      * that started it. A user therefore only sees the approvals of their own executions.
      */
     public PageResult<ApprovalRecord> page(int page, int size, String status, Long userId) {
-        LambdaQueryWrapper<ApprovalRecord> query = new LambdaQueryWrapper<ApprovalRecord>()
-                .eq(status != null && !status.isBlank(), ApprovalRecord::getStatus, status)
-                .orderByDesc(ApprovalRecord::getCreatedAt);
-        if (userId != null) {
-            List<Long> owned = ownedExecutionIds(userId);
-            if (owned.isEmpty()) {
-                // The user has no execution yet, so there is no approval either.
-                return PageResult.of(0L, page, size, List.of());
-            }
-            query.in(ApprovalRecord::getWorkflowExecutionId, owned);
-        }
-        Page<ApprovalRecord> result = approvalMapper.selectPage(new Page<>(page, size), query);
-        return PageResult.of(result.getTotal(), page, size, result.getRecords());
+        int limit = Math.max(1, size);
+        int offset = Math.max(0, page - 1) * limit;
+        long total = approvalMapper.countByOwner(userId, status);
+        List<ApprovalRecord> records = approvalMapper.findByOwner(userId, status, limit, offset);
+        return PageResult.of(total, page, size, records);
     }
 
     /**
@@ -375,15 +365,6 @@ public class ApprovalService {
         if (!execution.getUserId().equals(userId)) {
             throw new BizException(ErrorCode.AP_FORBIDDEN);
         }
-    }
-
-    /**
-     * The executions of one user.
-     */
-    private List<Long> ownedExecutionIds(Long userId) {
-        return executionMapper.findRecentByUser(userId, 1000).stream()
-                .map(WorkflowExecution::getId)
-                .toList();
     }
 
     /**

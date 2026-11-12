@@ -44,9 +44,10 @@ from app.messaging.events import (
 )
 from app.persistence.checkpoint import expected_thread_id, latest_checkpoint_id
 from app.persistence.repository import (
+    RESUME_CLAIMABLE,
     RESUME_CLAIMED,
-    RESUME_IN_FLIGHT,
     RESUME_PROCESSING,
+    RESUME_RECOVERABLE,
     STATUS_CANCELLED,
     STATUS_FAILED,
     STATUS_INTERRUPTED,
@@ -407,7 +408,7 @@ class AgentExecutor:
         takeover = False
 
         if not created:
-            if record.status not in RESUME_IN_FLIGHT:
+            if record.status not in RESUME_CLAIMABLE:
                 # The resume was already completed: the recorded result is
                 # published again so the backend learns about it.
                 logger.info(
@@ -563,26 +564,31 @@ class AgentExecutor:
         )
         while True:
             current = await self._store.get_resume(invocation_id, resume_request_id)
-            if current is None or current.status not in RESUME_IN_FLIGHT:
+            if current is None or current.status not in RESUME_CLAIMABLE:
                 # The owner finished the resume in the meantime.
                 return None
-            if current.takeover_count >= self._settings.resume_max_takeovers:
-                logger.error(
-                    "the resume was taken over too often, giving up",
-                    extra={
-                        "resumeRequestId": resume_request_id,
-                        "takeoverCount": current.takeover_count,
-                    },
-                )
-                raise ValidationError(
-                    "the resume was taken over too often, the worker keeps dying",
-                    error_code="AG-RESUME-TOKEOVER-LIMIT-001",
-                    category=ErrorCategory.TRANSIENT,
-                    retryable=True,
-                    diagnostics={"takeoverCount": current.takeover_count},
-                )
             now = _utcnow()
             if current.lease_expire_at is None or current.lease_expire_at <= now:
+                # The lease of the owner expired: the worker died. The resume
+                # may be taken over — but only as often as the limit allows.
+                if current.takeover_count >= self._settings.resume_max_takeovers:
+                    await self._mark_recoverable(
+                        invocation_id, resume_request_id, current.lease_token
+                    )
+                    logger.error(
+                        "the resume was taken over too often, giving up",
+                        extra={
+                            "resumeRequestId": resume_request_id,
+                            "takeoverCount": current.takeover_count,
+                        },
+                    )
+                    raise ValidationError(
+                        "the resume was taken over too often, the worker keeps dying",
+                        error_code="AG-RESUME-TOKEOVER-LIMIT-001",
+                        category=ErrorCategory.TRANSIENT,
+                        retryable=True,
+                        diagnostics={"takeoverCount": current.takeover_count},
+                    )
                 claimed = await self._store.claim_resume_lease(
                     invocation_id,
                     resume_request_id,
@@ -613,6 +619,26 @@ class AgentExecutor:
                 )
                 return None
             await asyncio.sleep(self._settings.resume_lease_poll_seconds)
+
+    async def _mark_recoverable(
+        self, invocation_id: int, resume_request_id: str, lease_token: int
+    ) -> None:
+        """Record that the resume may be recovered by hand.
+
+        The automatic takeover is given up when the workers keep dying. The
+        ledger then says ``RECOVERABLE``: the thread and its checkpoint are
+        still there, an operator (or a later delivery, after the cause is
+        gone) can continue it.
+        """
+        try:
+            await self._store.update_resume(
+                invocation_id,
+                resume_request_id,
+                status=RESUME_RECOVERABLE,
+                lease_token=lease_token,
+            )
+        except Exception:  # pragma: no cover - the audit must not mask the error
+            logger.exception("the resume could not be marked as recoverable")
 
     async def _renew_resume_lease(
         self, invocation_id: int, resume_request_id: str, lease_token: int

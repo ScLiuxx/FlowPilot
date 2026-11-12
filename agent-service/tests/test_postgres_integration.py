@@ -24,6 +24,7 @@ from langgraph.graph import END, START, StateGraph
 from app.persistence.checkpoint import latest_checkpoint_id, postgres_checkpointer
 from app.persistence.repository import (
     RESUME_CLAIMED,
+    RESUME_RECOVERABLE,
     STATUS_CANCELLED,
     STATUS_INTERRUPTED,
     STATUS_RUNNING,
@@ -204,6 +205,63 @@ async def test_the_resume_lease_is_taken_over_after_the_worker_died():
         assert closed is not None
         assert closed.status == "COMPLETED"
         assert closed.lease_expire_at is None
+    finally:
+        await store.close()
+
+
+async def test_a_recoverable_resume_can_be_taken_over():
+    """A resume that was given up can be continued again.
+
+    The ledger of a resume that was taken over too often says ``RECOVERABLE``.
+    The request may be taken over from that state, so the thread and its
+    checkpoint are not lost.
+    """
+    await apply_schema(DSN)
+
+    invocation_id = 97_000_000 + (uuid.uuid4().int % 4_000_000)
+    store = PostgresExecutionRecordStore(DSN)
+    await store.connect()
+    try:
+        record, created = await store.create_resume(
+            invocation_id=invocation_id,
+            resume_request_id="resume-001",
+            thread_id=f"flowpilot-{invocation_id}",
+            status=RESUME_CLAIMED,
+            payload={},
+            lease_expire_at=datetime.now(tz=timezone.utc) - timedelta(seconds=1),
+        )
+        assert created is True
+
+        # The worker gives up and marks the request as recoverable. The write
+        # is fenced by the lease token.
+        marked = await store.update_resume(
+            invocation_id,
+            "resume-001",
+            status=RESUME_RECOVERABLE,
+            lease_token=record.lease_token,
+        )
+        assert marked is not None
+        assert marked.status == RESUME_RECOVERABLE
+
+        # A worker with the wrong token must not be able to change it.
+        refused = await store.update_resume(
+            invocation_id,
+            "resume-001",
+            status=RESUME_CLAIMED,
+            lease_token=record.lease_token + 5,
+        )
+        assert refused is None
+
+        # The request may be taken over from the recoverable state.
+        claimed = await store.claim_resume_lease(
+            invocation_id,
+            "resume-001",
+            lease_expire_at=datetime.now(tz=timezone.utc) + timedelta(seconds=60),
+            expected_lease_token=record.lease_token,
+        )
+        assert claimed is not None, "a recoverable resume must be claimable"
+        assert claimed.status == RESUME_CLAIMED
+        assert claimed.takeover_count == 1
     finally:
         await store.close()
 

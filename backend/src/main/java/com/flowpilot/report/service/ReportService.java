@@ -322,6 +322,7 @@ public class ReportService {
         if (!activity.isEmpty()) {
             markdown.append("## 2. 最近 30 天提交情况\n\n");
             markdown.append("- 本次采集的提交数：").append(activity.get("totalCommits")).append("\n");
+            markdown.append("- 实际参与分析的提交数：").append(activity.get("analyzedCommits")).append("\n");
             markdown.append("- 近 30 天提交（采集范围内）：").append(activity.get("recentCommits")).append("\n");
             markdown.append("- 贡献者数量：").append(activity.get("authors")).append("\n");
             markdown.append("- 最近提交时间：").append(activity.get("latestCommitAt")).append("\n\n");
@@ -338,6 +339,7 @@ public class ReportService {
                         .append(reported).append("\n");
             }
             markdown.append("- 本次采集的 Issue 总数：").append(issues.get("totalIssues")).append("\n");
+            markdown.append("- 实际参与分析的条目数：").append(issues.get("analyzedItems")).append("\n");
             markdown.append("- 本次采集的未关闭 Issue：").append(issues.get("openIssues")).append("\n");
             markdown.append("- 本次采集的已关闭 Issue：").append(issues.get("closedIssues")).append("\n");
             markdown.append("- 本次采集的 Pull Request：").append(issues.get("pullRequests")).append("\n");
@@ -349,6 +351,7 @@ public class ReportService {
         if (!releases.isEmpty()) {
             markdown.append("## 4. 版本发布情况\n\n");
             markdown.append("- 本次采集的发布版本数：").append(releases.get("totalReleases")).append("\n");
+            markdown.append("- 实际参与分析的版本数：").append(releases.get("analyzedReleases")).append("\n");
             markdown.append("- 最新版本：").append(releases.get("latestVersion")).append("\n");
             markdown.append("- 最新发布时间：").append(releases.get("latestPublishedAt")).append("\n");
             markdown.append("- 距今天数：").append(releases.get("daysSinceLastRelease")).append("\n\n");
@@ -409,6 +412,14 @@ public class ReportService {
                 .append("\n");
         markdown.append("- 是否为抽样结果：")
                 .append(Boolean.TRUE.equals(collection.get("sampled")) ? "是" : "否").append("\n");
+        Object collected = collection.get("collected");
+        if (collected != null) {
+            markdown.append("- 本次采集数量：").append(collected).append("\n");
+        }
+        Object analyzed = collection.get("analyzed");
+        if (analyzed != null) {
+            markdown.append("- 实际分析数量：").append(analyzed).append("\n");
+        }
         Object pages = collection.get("totalPages");
         if (pages != null) {
             markdown.append("- 数据集总页数：").append(pages).append("\n");
