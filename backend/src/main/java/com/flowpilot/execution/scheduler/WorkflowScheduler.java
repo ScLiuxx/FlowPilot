@@ -69,6 +69,9 @@ public class WorkflowScheduler {
      */
     @Transactional
     public void onWorkflowStarted(Long executionId) {
+        // The lock is taken before the first read, so the concurrency limit of the
+        // workflow is evaluated against the current state of its nodes.
+        lockExecution(executionId);
         WorkflowExecution execution = executionService.get(executionId);
         if (WorkflowStatus.valueOf(execution.getStatus()).isTerminal()) {
             log.info("ignoring start message for terminal execution {}", executionId);
@@ -88,6 +91,7 @@ public class WorkflowScheduler {
      */
     @Transactional
     public void scheduleInitialNodes(Long executionId) {
+        lockExecution(executionId);
         WorkflowExecution execution = executionService.get(executionId);
         WorkflowDefinitionDocument document = loadDocument(execution);
         List<NodeExecution> nodes = executionService.nodes(executionId);
@@ -109,6 +113,9 @@ public class WorkflowScheduler {
      */
     @Transactional
     public void onNodeCompleted(Long executionId, String nodeKey) {
+        // The lock is taken before the first read, so the concurrency limit of the
+        // workflow is evaluated against the current state of its nodes.
+        lockExecution(executionId);
         WorkflowExecution execution = executionService.get(executionId);
         if (WorkflowStatus.valueOf(execution.getStatus()).isTerminal()) {
             return;
@@ -250,6 +257,12 @@ public class WorkflowScheduler {
      *
      * <p>The limit keeps a single workflow from occupying the whole worker pool, so a long
      * running workflow cannot starve the others.
+     *
+     * <p>The count is read while the execution row is locked (see
+     * {@link #lockExecution(Long)}), therefore it is the count of the nodes that are running
+     * <em>now</em>. Two schedulers that dispatch the successors of a node at the same time
+     * cannot both pass the check: the second one waits for the lock and then sees the node the
+     * first one dispatched.
      */
     private boolean hasCapacity(Long executionId) {
         if (maxConcurrency <= 0) {
@@ -263,6 +276,18 @@ public class WorkflowScheduler {
             }
         }
         return active < maxConcurrency;
+    }
+
+    /**
+     * Locks the execution row before the scheduling decision.
+     *
+     * <p>The lock is taken before the first plain read of the transaction, so the snapshot of
+     * the transaction is created while the lock is held. Without it the concurrency limit
+     * would be evaluated against a stale snapshot, and two schedulers could start more nodes
+     * than the limit allows.
+     */
+    private void lockExecution(Long executionId) {
+        executionMapper.lockExecution(executionId);
     }
 
     private void publishNodeExecute(NodeExecution node,

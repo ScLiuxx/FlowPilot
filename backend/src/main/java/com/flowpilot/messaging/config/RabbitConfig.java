@@ -5,6 +5,7 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.amqp.core.Binding;
 import org.springframework.amqp.core.BindingBuilder;
+import org.springframework.amqp.core.Declarables;
 import org.springframework.amqp.core.Queue;
 import org.springframework.amqp.core.QueueBuilder;
 import org.springframework.amqp.core.TopicExchange;
@@ -104,11 +105,16 @@ public class RabbitConfig {
     }
 
     @Bean
-    public Binding backendAgentEventsBinding(Queue backendAgentEventsQueue, TopicExchange flowpilotExchange) {
+    public Declarables backendAgentEventsBinding(Queue backendAgentEventsQueue,
+                                                TopicExchange flowpilotExchange) {
         // Only the result events reach the backend. The commands travel to the agent service.
-        BindingBuilder.bind(backendAgentEventsQueue).to(flowpilotExchange).with("agent.completed");
-        BindingBuilder.bind(backendAgentEventsQueue).to(flowpilotExchange).with("agent.failed");
-        return BindingBuilder.bind(backendAgentEventsQueue).to(flowpilotExchange).with("agent.interrupted");
+        //
+        // All three bindings are declared in one Declarables: a @Bean method that returns a
+        // single Binding would only register the last one.
+        return new Declarables(
+                BindingBuilder.bind(backendAgentEventsQueue).to(flowpilotExchange).with("agent.completed"),
+                BindingBuilder.bind(backendAgentEventsQueue).to(flowpilotExchange).with("agent.failed"),
+                BindingBuilder.bind(backendAgentEventsQueue).to(flowpilotExchange).with("agent.interrupted"));
     }
 
     @Bean

@@ -105,6 +105,8 @@ services:
       RABBITMQ_HOST: rabbitmq
       JWT_SECRET: ${JWT_SECRET:-flowpilot-development-secret-key-change-me-in-production-000}
       WORKER_ID: api-01
+      # The secret of the internal endpoints of the agent service.
+      AGENT_INTERNAL_TOKEN: ${AGENT_INTERNAL_TOKEN:-flowpilot-internal-token-change-me-in-production}
     ports:
       - "8080:8080"
     depends_on:
@@ -128,6 +130,8 @@ services:
       RABBITMQ_HOST: rabbitmq
       JWT_SECRET: ${JWT_SECRET:-flowpilot-development-secret-key-change-me-in-production-000}
       WORKER_ID: worker-01
+      # The secret of the internal endpoints of the agent service.
+      AGENT_INTERNAL_TOKEN: ${AGENT_INTERNAL_TOKEN:-flowpilot-internal-token-change-me-in-production}
     depends_on:
       mysql:
         condition: service_healthy
@@ -158,6 +162,9 @@ services:
       GITHUB_TOKEN: ${GITHUB_TOKEN:-}
       LLM_API_KEY: ${LLM_API_KEY:-}
       LLM_MODEL: ${LLM_MODEL:-gpt-4o-mini}
+      # The Java backend reads the invocation state through the internal
+      # endpoints, so both sides use the same secret.
+      INTERNAL_API_TOKEN: ${AGENT_INTERNAL_TOKEN:-flowpilot-internal-token-change-me-in-production}
     depends_on:
       rabbitmq:
         condition: service_healthy

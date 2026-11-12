@@ -773,6 +773,9 @@ CREATE TABLE message_outbox (
     next_retry_at DATETIME(3),
 
     created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+    -- 行被发布器领取的时刻。超时回收以该时刻为准，而不是创建时刻：
+    -- 一条很早创建、刚刚才被领取的行并不是超时行。
+    publishing_at DATETIME(3),
     published_at DATETIME(3),
 
     UNIQUE KEY uk_message_id (message_id),
@@ -781,6 +784,11 @@ CREATE TABLE message_outbox (
         status,
         next_retry_at,
         created_at
+    ),
+
+    KEY idx_outbox_publishing (
+        status,
+        publishing_at
     ),
 
     KEY idx_aggregate (

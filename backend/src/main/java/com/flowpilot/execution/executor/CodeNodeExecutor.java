@@ -84,6 +84,12 @@ public class CodeNodeExecutor implements NodeExecutor {
     private Map<String, Object> repositoryMetrics(NodeContext context) {
         Map<String, Object> payload = upstream(context, "collect_repository");
         Map<String, Object> body = asMap(payload.get("body"));
+        // The HTTP node summarises every response the same way: an endpoint
+        // that answers with an object holds exactly one item.
+        List<Map<String, Object>> items = asList(body);
+        if (!items.isEmpty()) {
+            body = items.get(0);
+        }
         Map<String, Object> output = new LinkedHashMap<>();
         output.put("fullName", body.get("full_name"));
         output.put("description", body.get("description"));
@@ -133,8 +139,12 @@ public class CodeNodeExecutor implements NodeExecutor {
      * <p>The open issues, the closed issues and the pull requests are collected
      * separately: the issues endpoint only answers with the open issues by
      * default, so the closed ones would never show up in a single collection.
-     * Each collection reports its exact number when the endpoint knows it, and
-     * the metadata states whether the numbers are complete.
+     * The pull requests are counted from the pull request collection, which
+     * does not mix them with the issues.
+     *
+     * <p>The numbers are the number of items that were collected. They are the
+     * totals of the repository only when the collection reached the last page;
+     * the metadata states which of the two it is.
      */
     private Map<String, Object> issueMetrics(NodeContext context) {
         Map<String, Object> openPayload = upstreamAny(context, "collect_open_issues", "collect_issues");
@@ -187,7 +197,7 @@ public class CodeNodeExecutor implements NodeExecutor {
                 .limit(20)
                 .map(issue -> issue.get("title"))
                 .toList());
-        // The numbers are only exact when every collection knew the total.
+        // The numbers are only exact when every collection reached its last page.
         output.put("countsExact", exact);
         output.put("collection", collectionMeta(openBody, closedBody, pullBody));
         return output;

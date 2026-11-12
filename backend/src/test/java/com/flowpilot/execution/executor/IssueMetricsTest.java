@@ -23,40 +23,28 @@ class IssueMetricsTest {
     private final CodeNodeExecutor executor = new CodeNodeExecutor();
 
     /**
-     * Builds the summary of a search response: the exact number of matching
-     * items and the page that was returned.
-     */
-    private Map<String, Object> exactSummary(long total, List<Map<String, Object>> items) {
-        Map<String, Object> collection = new LinkedHashMap<>();
-        collection.put("source", "search");
-        collection.put("collectedAt", "2026-11-12T10:00:00Z");
-        collection.put("countExact", true);
-        collection.put("itemsSampled", items.size() < total);
-
-        Map<String, Object> body = new LinkedHashMap<>();
-        body.put("count", total);
-        body.put("items", items);
-        body.put("truncated", items.size() < total);
-        body.put("collection", collection);
-        return body;
-    }
-
-    /**
      * Builds the summary of a paginated list response.
+     *
+     * @param collected how many items were collected
+     * @param complete whether the last page was reached — only then the count
+     *                is the total of the repository
      */
-    private Map<String, Object> listSummary(int collected, boolean complete, List<Map<String, Object>> items) {
+    private Map<String, Object> listSummary(int collected, boolean complete,
+                                            List<Map<String, Object>> items) {
         Map<String, Object> collection = new LinkedHashMap<>();
         collection.put("source", "list");
         collection.put("collectedAt", "2026-11-12T10:00:00Z");
-        collection.put("pagesFetched", 1);
+        collection.put("pagesFetched", complete ? 3 : 1);
         collection.put("complete", complete);
-        collection.put("countExact", false);
-        collection.put("itemsSampled", true);
+        collection.put("countExact", complete);
+        collection.put("itemsSampled", items.size() < collected);
+        collection.put("collected", collected);
+        collection.put("analyzed", items.size());
 
         Map<String, Object> body = new LinkedHashMap<>();
         body.put("count", collected);
         body.put("items", items);
-        body.put("truncated", false);
+        body.put("truncated", collected > items.size());
         body.put("collection", collection);
         return body;
     }
@@ -83,11 +71,11 @@ class IssueMetricsTest {
     @DisplayName("counts the open and the closed issues separately")
     void countsOpenAndClosedSeparately() {
         Map<String, Object> upstream = new LinkedHashMap<>();
-        upstream.put("collect_open_issues", nodeOutput(exactSummary(42,
+        upstream.put("collect_open_issues", nodeOutput(listSummary(42, true,
                 List.of(issue("1", "open", false), issue("2", "open", false)))));
-        upstream.put("collect_closed_issues", nodeOutput(exactSummary(137,
+        upstream.put("collect_closed_issues", nodeOutput(listSummary(137, true,
                 List.of(issue("3", "closed", false)))));
-        upstream.put("collect_pull_requests", nodeOutput(exactSummary(9,
+        upstream.put("collect_pull_requests", nodeOutput(listSummary(9, true,
                 List.of(issue("4", "open", true)))));
 
         NodeContext context = NodeContext.builder()
@@ -137,7 +125,7 @@ class IssueMetricsTest {
     @DisplayName("falls back to the old collection node")
     void fallsBackToTheOldCollection() {
         Map<String, Object> upstream = new LinkedHashMap<>();
-        upstream.put("collect_issues", nodeOutput(exactSummary(5,
+        upstream.put("collect_issues", nodeOutput(listSummary(5, true,
                 List.of(issue("1", "open", false), issue("2", "open", true)))));
 
         NodeContext context = NodeContext.builder()

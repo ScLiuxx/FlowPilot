@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import os
 import uuid
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
@@ -22,7 +23,12 @@ from langgraph.graph import END, START, StateGraph
 
 from app.persistence.checkpoint import latest_checkpoint_id, postgres_checkpointer
 from app.persistence.repository import (
+    RESUME_CLAIMED,
+    STATUS_CANCELLED,
+    STATUS_INTERRUPTED,
+    STATUS_RUNNING,
     STATUS_SUCCEEDED,
+    GuardRejected,
     PostgresExecutionRecordStore,
     apply_schema,
 )
@@ -123,3 +129,112 @@ async def test_the_postgres_checkpointer_stores_the_thread_checkpoints():
         checkpoint_id = await latest_checkpoint_id(saver, thread_id)
 
     assert checkpoint_id, "the checkpoint must be persisted in PostgreSQL"
+
+
+async def test_the_resume_lease_is_taken_over_after_the_worker_died():
+    """The takeover of a resume whose worker died works against PostgreSQL.
+
+    The lease is what makes the resume recoverable: the worker that died left
+    an expired lease behind, and the next delivery takes it over.
+    """
+    await apply_schema(DSN)
+
+    invocation_id = 95_000_000 + (uuid.uuid4().int % 4_000_000)
+    store = PostgresExecutionRecordStore(DSN)
+    await store.connect()
+    try:
+        await store.create(
+            invocation_id=invocation_id,
+            thread_id=f"flowpilot-{invocation_id}",
+            agent_type="REPORT_REVIEWER",
+        )
+
+        # The worker claimed the resume and died right after.
+        expired = datetime.now(tz=timezone.utc) - timedelta(seconds=5)
+        record, created = await store.create_resume(
+            invocation_id=invocation_id,
+            resume_request_id="resume-001",
+            thread_id=f"flowpilot-{invocation_id}",
+            status=RESUME_CLAIMED,
+            payload={},
+            lease_expire_at=expired,
+        )
+        assert created is True
+        assert record.lease_token == 1
+
+        # The next delivery takes the expired lease over.
+        claimed = await store.claim_resume_lease(
+            invocation_id,
+            "resume-001",
+            lease_expire_at=datetime.now(tz=timezone.utc) + timedelta(seconds=60),
+            expected_lease_token=record.lease_token,
+        )
+        assert claimed is not None, "the expired lease must be taken over"
+        assert claimed.lease_token == record.lease_token + 1
+        assert claimed.takeover_count == 1
+
+        # A second worker with the stale token must not win.
+        second = await store.claim_resume_lease(
+            invocation_id,
+            "resume-001",
+            lease_expire_at=datetime.now(tz=timezone.utc) + timedelta(seconds=60),
+            expected_lease_token=record.lease_token,
+        )
+        assert second is None
+
+        # The worker that lost the lease must not close the ledger.
+        refused = await store.complete_resume(
+            invocation_id,
+            "resume-001",
+            lease_token=record.lease_token,
+            status="COMPLETED",
+            payload={"messageType": "AgentCompleted"},
+        )
+        assert refused is None
+
+        # The new owner closes the ledger.
+        closed = await store.complete_resume(
+            invocation_id,
+            "resume-001",
+            lease_token=claimed.lease_token,
+            status="COMPLETED",
+            payload={"messageType": "AgentCompleted"},
+            checkpoint_id="checkpoint-1",
+        )
+        assert closed is not None
+        assert closed.status == "COMPLETED"
+        assert closed.lease_expire_at is None
+    finally:
+        await store.close()
+
+
+async def test_the_outcome_is_not_written_after_a_cancel():
+    """A cancelled invocation never receives a late success event."""
+    await apply_schema(DSN)
+
+    invocation_id = 96_000_000 + (uuid.uuid4().int % 4_000_000)
+    store = PostgresExecutionRecordStore(DSN)
+    await store.connect()
+    try:
+        await store.create(
+            invocation_id=invocation_id,
+            thread_id=f"flowpilot-{invocation_id}",
+            agent_type="REPOSITORY_ANALYST",
+        )
+        # The invocation was cancelled.
+        await store.update(invocation_id, status=STATUS_CANCELLED)
+
+        with pytest.raises(GuardRejected):
+            await store.update_with_outcome(
+                invocation_id,
+                status=STATUS_SUCCEEDED,
+                result={"invocationId": invocation_id},
+                guard_statuses=(STATUS_RUNNING, STATUS_INTERRUPTED),
+            )
+
+        # The record was not overwritten.
+        record = await store.get(invocation_id)
+        assert record is not None
+        assert record.status == STATUS_CANCELLED
+    finally:
+        await store.close()

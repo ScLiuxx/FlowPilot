@@ -113,7 +113,14 @@ class Settings(BaseSettings):
     # --- internal API --------------------------------------------------
     internal_api_token: str | None = Field(
         default=None,
-        description="Optional bearer token protecting /internal endpoints.",
+        description="Bearer token protecting /internal endpoints.",
+    )
+    #: The environments in which the internal endpoints may be reached without
+    #: a token. Everywhere else a missing token is a configuration error and
+    #: the service refuses to start.
+    internal_api_token_required_environments: tuple[str, ...] = Field(
+        default=("production", "prod", "staging"),
+        description="Environments that require the internal api token.",
     )
 
     # --- OpenTelemetry --------------------------------------------------
@@ -121,6 +128,30 @@ class Settings(BaseSettings):
     otel_enabled: bool = True
     otel_exporter_otlp_endpoint: str = ""
     otel_service_name: str = "flowpilot-agent-service"
+
+    # -- validation ------------------------------------------------------
+    def internal_api_token_required(self) -> bool:
+        """Whether the internal endpoints must be protected by a token."""
+        if self.internal_api_token:
+            return True
+        return self.environment.strip().lower() in {
+            environment.strip().lower()
+            for environment in self.internal_api_token_required_environments
+        }
+
+    def validate(self) -> None:
+        """Reject a configuration that would expose the internal endpoints.
+
+        The internal endpoints read the invocation records of the whole
+        platform. A deployment that leaves the token empty would let everybody
+        who can reach the port read them, so the service refuses to start.
+        """
+        if self.internal_api_token_required() and not self.internal_api_token:
+            raise ValueError(
+                "INTERNAL_API_TOKEN must be configured in the environment "
+                f"{self.environment!r}: the internal endpoints would otherwise be "
+                "reachable without a token"
+            )
 
 
 @lru_cache(maxsize=1)

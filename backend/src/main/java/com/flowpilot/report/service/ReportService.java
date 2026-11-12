@@ -141,7 +141,7 @@ public class ReportService {
         content.put("collection", collectionScope(metrics, issues, activity, releases));
 
         content.put("summary", buildSummary(repository, activity, issues, releases, analysis));
-        content.put("riskLevel", assessRiskLevel(activity, issues, releases, analysis));
+        content.put("riskLevel", assessRiskLevel(activity, issues, releases, analysis, repository));
         content.put("productionReady", assessProductionReadiness(activity, issues, releases, analysis));
         return content;
     }
@@ -216,9 +216,9 @@ public class ReportService {
         }
         Object openIssues = issues.get("openIssues");
         if (openIssues != null) {
-            summary.append("，当前有 ").append(openIssues).append(" 个未关闭 Issue");
+            summary.append("，本次采集到 ").append(openIssues).append(" 个未关闭 Issue");
             if (Boolean.FALSE.equals(issues.get("countsExact"))) {
-                summary.append("（本次采集数量）");
+                summary.append("（抽样，非全量）");
             }
         }
         Object latestVersion = releases.get("latestVersion");
@@ -236,9 +236,14 @@ public class ReportService {
 
     /**
      * Derives a coarse risk level from the collected metrics.
+     *
+     * <p>The number of open issues comes from the repository metadata, which
+     * reports the exact total. The collected issues are a sample and must not
+     * decide the risk level.
      */
     private String assessRiskLevel(Map<String, Object> activity, Map<String, Object> issues,
-                                   Map<String, Object> releases, Map<String, Object> analysis) {
+                                   Map<String, Object> releases, Map<String, Object> analysis,
+                                   Map<String, Object> repository) {
         Object explicit = analysis.get("riskLevel");
         if (explicit != null) {
             return String.valueOf(explicit);
@@ -247,7 +252,7 @@ public class ReportService {
         long recentCommits = asLong(activity.get("recentCommits"));
         Long daysSinceRelease = releases.get("daysSinceLastRelease") == null
                 ? null : asLong(releases.get("daysSinceLastRelease"));
-        long openIssues = asLong(issues.get("openIssues"));
+        long openIssues = asLong(repository.get("openIssues"));
 
         if (recentCommits == 0) {
             score += 2;
@@ -316,8 +321,8 @@ public class ReportService {
         Map<String, Object> activity = asMap(content.get("activity"));
         if (!activity.isEmpty()) {
             markdown.append("## 2. 最近 30 天提交情况\n\n");
-            markdown.append("- 提交总数：").append(activity.get("totalCommits")).append("\n");
-            markdown.append("- 近 30 天提交：").append(activity.get("recentCommits")).append("\n");
+            markdown.append("- 本次采集的提交数：").append(activity.get("totalCommits")).append("\n");
+            markdown.append("- 近 30 天提交（采集范围内）：").append(activity.get("recentCommits")).append("\n");
             markdown.append("- 贡献者数量：").append(activity.get("authors")).append("\n");
             markdown.append("- 最近提交时间：").append(activity.get("latestCommitAt")).append("\n\n");
         }
@@ -325,17 +330,25 @@ public class ReportService {
         Map<String, Object> issues = asMap(content.get("issues"));
         if (!issues.isEmpty()) {
             markdown.append("## 3. Issue 与 Pull Request 活跃度\n\n");
-            markdown.append("- Issue 总数：").append(issues.get("totalIssues")).append("\n");
-            markdown.append("- 未关闭 Issue：").append(issues.get("openIssues")).append("\n");
-            markdown.append("- 已关闭 Issue：").append(issues.get("closedIssues")).append("\n");
-            markdown.append("- Pull Request：").append(issues.get("pullRequests")).append("\n");
-            markdown.append("- 近 30 天新增 Issue：").append(issues.get("recentIssues")).append("\n\n");
+            // The repository metadata carries the exact number of open issues
+            // and pull requests; the collections are samples of the history.
+            Object reported = repository.get("openIssues");
+            if (reported != null) {
+                markdown.append("- 未关闭 Issue 与 Pull Request（仓库元数据）：")
+                        .append(reported).append("\n");
+            }
+            markdown.append("- 本次采集的 Issue 总数：").append(issues.get("totalIssues")).append("\n");
+            markdown.append("- 本次采集的未关闭 Issue：").append(issues.get("openIssues")).append("\n");
+            markdown.append("- 本次采集的已关闭 Issue：").append(issues.get("closedIssues")).append("\n");
+            markdown.append("- 本次采集的 Pull Request：").append(issues.get("pullRequests")).append("\n");
+            markdown.append("- 近 30 天新增 Issue（采集范围内）：").append(issues.get("recentIssues"))
+                    .append("\n\n");
         }
 
         Map<String, Object> releases = asMap(content.get("releases"));
         if (!releases.isEmpty()) {
             markdown.append("## 4. 版本发布情况\n\n");
-            markdown.append("- 发布版本总数：").append(releases.get("totalReleases")).append("\n");
+            markdown.append("- 本次采集的发布版本数：").append(releases.get("totalReleases")).append("\n");
             markdown.append("- 最新版本：").append(releases.get("latestVersion")).append("\n");
             markdown.append("- 最新发布时间：").append(releases.get("latestPublishedAt")).append("\n");
             markdown.append("- 距今天数：").append(releases.get("daysSinceLastRelease")).append("\n\n");

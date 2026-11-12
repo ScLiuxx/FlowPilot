@@ -151,8 +151,9 @@ flowpilot:
   agent:
     service-url: ${AGENT_SERVICE_URL:http://localhost:8000}
     # The token of the internal endpoints of the agent service. It protects the endpoint that
-    # reports the real state of an invocation.
-    internal-token: ${AGENT_INTERNAL_TOKEN:}
+    # reports the real state of an invocation. It must be the same secret the agent
+    # service was started with (INTERNAL_API_TOKEN).
+    internal-token: ${AGENT_INTERNAL_TOKEN:flowpilot-internal-token-change-me-in-production}
     query-timeout-seconds: 10
     max-execution-seconds: 900
   github:

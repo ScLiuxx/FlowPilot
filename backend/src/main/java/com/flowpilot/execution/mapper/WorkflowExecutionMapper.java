@@ -49,6 +49,18 @@ public interface WorkflowExecutionMapper extends BaseMapper<WorkflowExecution> {
     @Select("SELECT event_sequence FROM workflow_execution WHERE id = #{id} FOR UPDATE")
     Long lockEventSequence(@Param("id") Long id);
 
+    /**
+     * Locks the execution row for the scheduling decision.
+     *
+     * <p>The lock is taken <em>before</em> the first plain read of the transaction, so the
+     * snapshot of the transaction is created while the lock is held. A second scheduler that
+     * waits for the lock therefore sees the nodes the first one dispatched, and the
+     * concurrency limit of the workflow is a real limit and not a snapshot of a moment that
+     * has already passed.
+     */
+    @Select("SELECT id FROM workflow_execution WHERE id = #{id} FOR UPDATE")
+    Long lockExecution(@Param("id") Long id);
+
     @Select("""
             SELECT * FROM workflow_execution
              WHERE user_id = #{userId}

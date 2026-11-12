@@ -1,9 +1,10 @@
 """Internal admin / debug endpoints.
 
 These endpoints are meant for the operations team and for debugging a running
-agent service. They are protected by an optional bearer token
-(``INTERNAL_API_TOKEN``); when the token is not configured the endpoints are
-open, which is only acceptable inside a trusted network.
+agent service. They are protected by a bearer token (``INTERNAL_API_TOKEN``).
+The token is optional in the local development environment, but a deployment
+that leaves it empty exposes the invocation records of the whole platform —
+the service therefore refuses to start in a production environment without it.
 """
 
 from __future__ import annotations
@@ -20,9 +21,17 @@ router = APIRouter(prefix="/internal", tags=["internal"])
 
 
 async def require_internal_token(request: Request) -> None:
+    """Reject every request that does not carry the internal token."""
     settings: Settings = getattr(request.app.state, "settings", None) or get_settings()
     expected = settings.internal_api_token
     if not expected:
+        # The service does not start in a protected environment without a
+        # token, so an empty token only happens in local development.
+        if settings.internal_api_token_required():
+            raise HTTPException(
+                status_code=503,
+                detail="the internal api is not configured",
+            )
         return
     header = request.headers.get("authorization", "")
     if header != f"Bearer {expected}":

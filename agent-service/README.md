@@ -120,7 +120,11 @@ docker run --rm -p 8000:8000 \
 | `LLM_API_KEY` / `OPENAI_API_KEY` | – | when set the real model is used |
 | `LLM_BASE_URL` / `LLM_MODEL` | `https://api.openai.com/v1` / `gpt-4o-mini` | OpenAI compatible endpoint |
 | `GITHUB_TOKEN` | – | optional; without it the public API is used (low rate limit) |
-| `INTERNAL_API_TOKEN` | – | bearer token for `/internal/**` |
+| `INTERNAL_API_TOKEN` | – | bearer token for `/internal/**`; **required** in `production`/`staging` |
+| `RESUME_LEASE_SECONDS` | `30` | how long a worker may continue a paused thread |
+| `RESUME_LEASE_WAIT_SECONDS` | `15` | how long a delivery waits for the lease of a resume |
+| `RESUME_MAX_TAKEOVERS` | `3` | how often a resume may be taken over before it is given up |
+| `CANCEL_POLL_SECONDS` | `2.0` | how often a running agent reads the cancel state |
 | `PROTOCOL_SCHEMA_DIR` | auto detected | directory of the shared JSON Schema files |
 | `OTEL_ENABLED` | `true` | `false` → no OpenTelemetry spans |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | – | OTLP gRPC endpoint; empty → the spans stay local |
@@ -195,7 +199,50 @@ and waits. The backend answers with `AgentResume`, the graph is continued with
 > selects the Redis implementation (`SET key value NX EX ttl`, therefore atomic)
 > and an empty value falls back to the in memory journal with a warning.
 
-### 3.5 Budgets
+### 3.5 The recovery of a resume
+
+A resume that is continued by a worker that dies would be stuck forever: the
+ledger of `agent_resume_record` holds the claim, and every later delivery of
+the resume command would find the claim and give up.
+
+The ledger therefore carries a **lease**:
+
+| Column | Meaning |
+|---|---|
+| `lease_token` | the fencing token of the worker that owns the resume |
+| `lease_expire_at` | the moment the lease of the owner expires |
+| `takeover_count` | how often the resume was taken over |
+
+* The worker that claims a resume takes the lease and renews it while it
+  continues the thread.
+* A delivery that finds an **expired** lease takes it over: the token is
+  incremented, the takeover is counted, and the graph continues on the **same**
+  thread and the **same** checkpoint. The takeover is fenced by the token: the
+  worker that lost the lease can no longer write the result.
+* A delivery that finds a **live** lease belongs to a worker that is still
+  working. It waits for the lease and gives up if the owner finishes in the
+  meantime.
+* A resume that was taken over too often (`RESUME_MAX_TAKEOVERS`) is given up
+  with `AG-RESUME-TOKEOVER-LIMIT-001` instead of looping forever.
+
+`tests/test_resume_recovery.py` and `tests/test_postgres_integration.py` assert
+the takeover, the fencing and the limit.
+
+### 3.6 The cancellation of a running agent
+
+`AgentCancel` is a **request**, not a kill: the side effects the agent already
+caused are not undone.
+
+* The terminal state is written first and **conditionally** (`guard_statuses`):
+  a success that is already on its way wins the race, and a cancelled
+  invocation never receives a late success event.
+* The running graph is stopped where it can be stopped: the graph runs in its
+  own task, the cancel command cancels it, and the nodes check the
+  cancellation before every tool call and every model call.
+* A cancel that was handled by **another replica** is noticed through the
+  execution record: the running worker reads it regularly and stops.
+
+### 3.7 Budgets
 
 `maxIterations`, `maxToolCalls`, `maxTokens` and `timeoutSeconds` come from the
 `AgentExecute` payload config. The tool budget is reserved *before* the call is
@@ -211,7 +258,7 @@ made, the wall clock budget is enforced with `asyncio.wait_for`.
 The service never hangs: every path ends in `agent.completed` or
 `agent.failed`.
 
-### 3.6 Tool security (allow list, SSRF, prompt injection)
+### 3.8 Tool security (allow list, SSRF, prompt injection)
 
 * Only `owner/repo` or `https://github.com/owner/repo` are accepted; every
   other form (other hosts, other schemes, `git@` remotes, extra path segments,
@@ -229,7 +276,7 @@ The service never hangs: every path ends in `agent.completed` or
 * `GITHUB_TOKEN` is used when present; without it the unauthenticated public
   API is used and a 403/429 is mapped to the `RATE_LIMIT` category.
 
-### 3.7 LLM provider
+### 3.9 LLM provider
 
 `app/llm/provider.py` returns the real OpenAI compatible client when
 `LLM_API_KEY`/`OPENAI_API_KEY` is set, otherwise the deterministic
@@ -237,7 +284,7 @@ The service never hangs: every path ends in `agent.completed` or
 analysis schema, so the service, the tests and the demo work completely
 offline and produce stable output.
 
-### 3.8 Messaging reliability
+### 3.10 Messaging reliability
 
 * Durable topic exchange `flowpilot.events`, durable queues
   `agent.execute.queue` / `agent.control.queue`, both dead lettering to
@@ -262,7 +309,7 @@ failed delivery returns the row to `PENDING` with an exponential backoff
 `OUTBOX_PUBLISHING_TIMEOUT_SECONDS` is reclaimed. The delivery is *at least
 once*: the backend stays idempotent on the invocation id.
 
-### 3.9 Observability
+### 3.11 Observability
 
 Structured JSON logs (one JSON object per line) always carry `traceId`,
 `invocationId`, `threadId` and `messageId`; the identifiers are bound through

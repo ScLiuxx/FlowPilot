@@ -69,40 +69,40 @@ public class HttpNodeExecutor implements NodeExecutor {
      *
      * @param path the path of the endpoint, {@code {owner}} and {@code {repo}} are replaced
      * @param query the query parameters the endpoint is called with
-     * @param exactCount whether the endpoint answers with the exact number of matching items
      */
-    private record Operation(String path, Map<String, String> query, boolean exactCount) {
+    private record Operation(String path, Map<String, String> query) {
     }
 
-    /** Maps the operation of a collection node onto a GitHub API path. */
+    /**
+     * Maps the operation of a collection node onto a GitHub API path.
+     *
+     * <p>The issues are collected per state: the endpoint answers with the open
+     * issues by default, so a single collection would never contain the closed
+     * ones and the number of them would be wrong.
+     */
     private static final Map<String, Operation> OPERATIONS = Map.ofEntries(
             Map.entry("get_repository",
-                    new Operation("/repos/{owner}/{repo}", Map.of(), false)),
+                    new Operation("/repos/{owner}/{repo}", Map.of())),
             Map.entry("get_commits",
-                    new Operation("/repos/{owner}/{repo}/commits", Map.of(), false)),
+                    new Operation("/repos/{owner}/{repo}/commits", Map.of())),
             Map.entry("get_issues",
-                    new Operation("/repos/{owner}/{repo}/issues", Map.of("state", "open"), false)),
+                    new Operation("/repos/{owner}/{repo}/issues", Map.of("state", "open"))),
+            Map.entry("get_open_issues",
+                    new Operation("/repos/{owner}/{repo}/issues", Map.of("state", "open"))),
+            Map.entry("get_closed_issues",
+                    new Operation("/repos/{owner}/{repo}/issues", Map.of("state", "closed"))),
             Map.entry("get_pull_requests",
-                    new Operation("/repos/{owner}/{repo}/pulls", Map.of("state", "open"), false)),
+                    new Operation("/repos/{owner}/{repo}/pulls", Map.of("state", "all"))),
+            Map.entry("get_open_pull_requests",
+                    new Operation("/repos/{owner}/{repo}/pulls", Map.of("state", "open"))),
             Map.entry("get_releases",
-                    new Operation("/repos/{owner}/{repo}/releases", Map.of(), false)),
+                    new Operation("/repos/{owner}/{repo}/releases", Map.of())),
             Map.entry("get_contributors",
-                    new Operation("/repos/{owner}/{repo}/contributors", Map.of(), false)),
+                    new Operation("/repos/{owner}/{repo}/contributors", Map.of())),
             Map.entry("get_languages",
-                    new Operation("/repos/{owner}/{repo}/languages", Map.of(), false)),
+                    new Operation("/repos/{owner}/{repo}/languages", Map.of())),
             Map.entry("get_dependency_manifest",
-                    new Operation("/repos/{owner}/{repo}/contents", Map.of(), false)),
-            // The search endpoints answer with the exact number of matching items, which is the
-            // only way to report the real number of open and closed issues.
-            Map.entry("search_open_issues",
-                    new Operation("/search/issues?q=repo:{owner}/{repo}+type:issue+state=open",
-                            Map.of(), true)),
-            Map.entry("search_closed_issues",
-                    new Operation("/search/issues?q=repo:{owner}/{repo}+type:issue+state=closed",
-                            Map.of(), true)),
-            Map.entry("search_pull_requests",
-                    new Operation("/search/issues?q=repo:{owner}/{repo}+type:pr",
-                            Map.of(), true)));
+                    new Operation("/repos/{owner}/{repo}/contents", Map.of())));
 
     private final HttpClient httpClient;
     private final String githubToken;
@@ -176,11 +176,7 @@ public class HttpNodeExecutor implements NodeExecutor {
         output.put("statusCode", 200);
         output.put("url", url);
         try {
-            if (operation.exactCount()) {
-                output.put("body", collectExact(url, context, perPage));
-            } else {
-                output.put("body", collectPages(url, context, perPage, maxPages));
-            }
+            output.put("body", collectPages(url, context, perPage, maxPages));
             return NodeResult.success(output);
         } catch (CollectionFailed failed) {
             return failed.getResult();
@@ -203,6 +199,10 @@ public class HttpNodeExecutor implements NodeExecutor {
      * <p>The pages are addressed by the {@code page} parameter of the endpoint — the {@code next}
      * link of the response header is only read to find out whether another page exists, never
      * followed. A header could otherwise point the node at an arbitrary host.
+     *
+     * <p>The count of the summary is the number of items that were <em>collected</em>. It is the
+     * total of the repository only when the last page was reached; the metadata states which of
+     * the two it is.
      */
     private Map<String, Object> collectPages(String url, NodeContext context,
                                              int perPage, int maxPages) throws IOException, InterruptedException {
@@ -222,17 +222,17 @@ public class HttpNodeExecutor implements NodeExecutor {
 
             com.fasterxml.jackson.databind.JsonNode root =
                     JsonUtils.mapper().readTree(response.body());
-            if (root.isArray()) {
-                root.forEach(collected::add);
-            } else {
-                // An endpoint that answers with an object is not paginated.
+            if (!root.isArray()) {
+                // An endpoint that answers with an object (the repository for
+                // example) holds exactly one item and is never paginated.
                 Map<String, Object> summary = new LinkedHashMap<>();
                 summary.put("count", 1);
-                summary.put("items", List.of());
+                summary.put("items", List.of(JsonUtils.mapper().convertValue(root, Map.class)));
                 summary.put("truncated", false);
-                summary.put("collection", collectionMeta(1, 1, true, false));
+                summary.put("collection", collectionMeta(1, 1, true, false, 1, 1));
                 return summary;
             }
+            root.forEach(collected::add);
 
             pagesFetched = page;
             String link = response.headers().firstValue("link").orElse(null);
@@ -252,46 +252,7 @@ public class HttpNodeExecutor implements NodeExecutor {
         summary.put("items", items);
         summary.put("truncated", collected.size() > items.size());
         summary.put("collection", collectionMeta(pagesFetched, lastPage, !hasNext,
-                collected.size() > items.size()));
-        return summary;
-    }
-
-    /**
-     * Collects an endpoint that answers with the exact number of matching items.
-     *
-     * <p>The search endpoints return the total in {@code total_count}, therefore the count is
-     * exact — but only the returned page is analysed, which the metadata states.
-     */
-    private Map<String, Object> collectExact(String url, NodeContext context,
-                                              int perPage) throws IOException, InterruptedException {
-        String pageUrl = withQuery(url, Map.of("per_page", String.valueOf(perPage)));
-        HttpResponse<String> response = httpClient.send(buildRequest(pageUrl, context),
-                HttpResponse.BodyHandlers.ofString());
-        NodeResult failure = checkStatus(response);
-        if (failure != null) {
-            throw new CollectionFailed(failure);
-        }
-
-        com.fasterxml.jackson.databind.JsonNode root = JsonUtils.mapper().readTree(response.body());
-        long total = root.path("total_count").asLong(0);
-        List<Object> items = new ArrayList<>();
-        for (com.fasterxml.jackson.databind.JsonNode item : root.path("items")) {
-            items.add(JsonUtils.mapper().convertValue(item, Map.class));
-        }
-        int kept = Math.min(items.size(), MAX_ITEMS);
-
-        Map<String, Object> summary = new LinkedHashMap<>();
-        summary.put("count", total);
-        summary.put("items", items.subList(0, kept));
-        summary.put("truncated", items.size() > kept);
-        Map<String, Object> collection = new LinkedHashMap<>();
-        collection.put("source", "search");
-        collection.put("collectedAt", Instant.now().toString());
-        collection.put("countExact", true);
-        collection.put("itemsSampled", items.size() > kept);
-        collection.put("collected", total);
-        collection.put("analyzed", kept);
-        summary.put("collection", collection);
+                collected.size() > items.size(), collected.size(), items.size()));
         return summary;
     }
 
@@ -299,7 +260,7 @@ public class HttpNodeExecutor implements NodeExecutor {
      * Describes what was collected, so that a sample is never presented as the total.
      */
     private Map<String, Object> collectionMeta(int pagesFetched, int lastPage, boolean complete,
-                                               boolean itemsSampled) {
+                                               boolean itemsSampled, int collected, int analyzed) {
         Map<String, Object> collection = new LinkedHashMap<>();
         collection.put("source", "list");
         collection.put("collectedAt", Instant.now().toString());
@@ -307,9 +268,13 @@ public class HttpNodeExecutor implements NodeExecutor {
         if (lastPage > 0) {
             collection.put("totalPages", lastPage);
         }
+        // The collection is complete when the last page was reached: then the
+        // number of collected items is the number of items the repository has.
         collection.put("complete", complete);
-        collection.put("countExact", false);
+        collection.put("countExact", complete);
         collection.put("itemsSampled", itemsSampled);
+        collection.put("collected", collected);
+        collection.put("analyzed", analyzed);
         return collection;
     }
 
@@ -415,7 +380,7 @@ public class HttpNodeExecutor implements NodeExecutor {
         Object url = config.get("url");
         if (url != null) {
             // An explicit url is not paginated.
-            return new Operation("", Map.of(), false);
+            return new Operation("", Map.of());
         }
         String operation = String.valueOf(config.getOrDefault("operation", "get_repository"));
         Operation resolved = OPERATIONS.get(operation);

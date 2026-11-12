@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import pytest
 from fastapi.testclient import TestClient
 
+from app.config.settings import Settings
 from app.main import create_app
 from app.runtime.registry import register_default_graphs, AgentGraphRegistry
 
@@ -56,6 +58,31 @@ def test_the_internal_api_token_is_enforced(settings):
         assert client.get("/internal/agents").status_code == 401
         ok = client.get("/internal/agents", headers={"Authorization": "Bearer s3cret"})
         assert ok.status_code == 200
+
+
+def test_the_service_refuses_to_start_without_a_token_in_production(settings):
+    """A deployment that exposes the invocation records must not start."""
+    settings.environment = "production"
+    settings.internal_api_token = None
+    with pytest.raises(ValueError, match="INTERNAL_API_TOKEN"):
+        create_app(settings=settings, start_messaging=False, start_persistence=False)
+
+
+def test_the_service_starts_without_a_token_in_development(settings):
+    settings.environment = "local"
+    settings.internal_api_token = None
+    with _client(settings) as client:
+        assert client.get("/internal/agents").status_code == 200
+
+
+def test_the_internal_api_is_closed_without_a_token_in_production(settings, monkeypatch):
+    """Even if the service runs, the endpoints must not answer."""
+    settings.environment = "production"
+    settings.internal_api_token = None
+    # The startup validation is bypassed, the endpoints still refuse.
+    monkeypatch.setattr(Settings, "validate", lambda self: None)
+    with _client(settings) as client:
+        assert client.get("/internal/agents").status_code == 503
 
 
 def test_the_registry_contains_the_default_graphs():

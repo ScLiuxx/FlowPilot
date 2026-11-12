@@ -11,8 +11,6 @@ import org.springframework.amqp.rabbit.core.RabbitTemplate;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
-import org.springframework.transaction.annotation.Propagation;
-import org.springframework.transaction.annotation.Transactional;
 
 import java.time.LocalDateTime;
 import java.util.List;
@@ -25,12 +23,17 @@ import java.util.concurrent.TimeUnit;
  * the message. If the publisher crashes between sending and updating, the row is picked up again
  * and the message is delivered twice. That is acceptable: consumers are idempotent, which is the
  * documented delivery semantics of the platform.
+ *
+ * <p>The claim and the recovery of the stale rows live in {@link OutboxClaimService}: a
+ * {@code @Transactional} method only gets a transaction when it is called through the Spring
+ * proxy, so a self invocation would silently run without one.
  */
 @Slf4j
 @Component
 @RequiredArgsConstructor
 public class OutboxPublisher {
 
+    private final OutboxClaimService claimService;
     private final MessageOutboxMapper outboxMapper;
     private final RabbitTemplate rabbitTemplate;
 
@@ -43,27 +46,21 @@ public class OutboxPublisher {
     @Value("${flowpilot.messaging.outbox.confirm-timeout-ms:10000}")
     private long confirmTimeoutMs;
 
+    /**
+     * How long a row may stay in the publishing state before it is recovered.
+     */
+    @Value("${flowpilot.messaging.outbox.publishing-timeout-seconds:300}")
+    private long publishingTimeoutSeconds;
+
     @Scheduled(fixedDelayString = "${flowpilot.messaging.outbox.poll-interval-ms:500}")
     public void publishPending() {
         if (!enabled) {
             return;
         }
-        List<MessageOutbox> batch = claimBatch();
+        List<MessageOutbox> batch = claimService.claimBatch(LocalDateTime.now(), batchSize);
         for (MessageOutbox record : batch) {
             publishOne(record);
         }
-    }
-
-    /**
-     * Claims rows with a short transaction, then publishes them outside of any transaction so the
-     * database connection is not held while waiting for the broker.
-     */
-    @Transactional(propagation = Propagation.REQUIRES_NEW)
-    public List<MessageOutbox> claimBatch() {
-        List<MessageOutbox> candidates = outboxMapper.claimPending(LocalDateTime.now(), batchSize);
-        return candidates.stream()
-                .filter(record -> outboxMapper.markPublishing(record.getId()) == 1)
-                .toList();
     }
 
     private void publishOne(MessageOutbox record) {
@@ -87,7 +84,11 @@ public class OutboxPublisher {
                 throw new IllegalStateException("the broker rejected the message: " + confirm.getReason());
             }
 
-            outboxMapper.markPublished(record.getId());
+            // The update is conditional on the status: if the row was recovered in the
+            // meantime, the recovery must not be overwritten.
+            if (outboxMapper.markPublished(record.getId()) == 0) {
+                log.warn("the outbox row {} was recovered while it was published", record.getId());
+            }
             log.debug("outbox published id={} type={} routingKey={}",
                     record.getId(), record.getMessageType(), record.getRoutingKey());
         } catch (Exception ex) {
@@ -108,16 +109,11 @@ public class OutboxPublisher {
      * publisher dies mid-flight.
      */
     @Scheduled(fixedDelayString = "${flowpilot.messaging.outbox.stale-scan-interval-ms:60000}")
-    @Transactional
     public void recoverStale() {
         if (!enabled) {
             return;
         }
-        List<MessageOutbox> stale = outboxMapper.findStalePublishing(
-                LocalDateTime.now().minusMinutes(5), batchSize);
-        for (MessageOutbox record : stale) {
-            outboxMapper.reschedule(record.getId(), LocalDateTime.now());
-            log.warn("recovered stale outbox row id={} messageId={}", record.getId(), record.getMessageId());
-        }
+        claimService.recoverStale(
+                LocalDateTime.now().minusSeconds(publishingTimeoutSeconds), batchSize);
     }
 }

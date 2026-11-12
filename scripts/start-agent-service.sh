@@ -28,6 +28,7 @@ setsid nohup env \
   GITHUB_TOKEN="${GITHUB_TOKEN:-}" \
   HTTP_PROXY="${HTTP_PROXY:-}" \
   HTTPS_PROXY="${HTTPS_PROXY:-}" \
+  INTERNAL_API_TOKEN="${INTERNAL_API_TOKEN:-}" \
   "$VENV/bin/python" -m uvicorn app.main:app --host 127.0.0.1 --port 8000 \
   > "$LOG" 2>&1 < /dev/null &
 

@@ -51,5 +51,13 @@ public class MessageOutbox {
     @TableField(fill = FieldFill.INSERT)
     private LocalDateTime createdAt;
 
+    /**
+     * The moment the row was claimed for publishing.
+     *
+     * <p>The recovery of a row whose publisher died is based on this moment: a
+     * row that was created long ago and is published right now is not stale.
+     */
+    private LocalDateTime publishingAt;
+
     private LocalDateTime publishedAt;
 }

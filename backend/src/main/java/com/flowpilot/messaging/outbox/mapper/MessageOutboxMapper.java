@@ -27,28 +27,52 @@ public interface MessageOutboxMapper extends BaseMapper<MessageOutbox> {
             """)
     List<MessageOutbox> claimPending(@Param("now") LocalDateTime now, @Param("limit") int limit);
 
+    /**
+     * Moves a row into the publishing state.
+     *
+     * <p>The update is conditional on the status, so two publishers cannot claim
+     * the same row. The moment of the claim is recorded: the recovery of a row
+     * whose publisher died is based on it, not on the creation of the row.
+     */
     @Update("""
             UPDATE message_outbox
                SET status = 'PUBLISHING',
-                   retry_count = retry_count + 1
+                   retry_count = retry_count + 1,
+                   publishing_at = #{publishingAt}
              WHERE id = #{id}
                AND status = 'PENDING'
             """)
-    int markPublishing(@Param("id") Long id);
+    int markPublishing(@Param("id") Long id, @Param("publishingAt") LocalDateTime publishingAt);
 
+    /**
+     * Marks a row as published.
+     *
+     * <p>The update is conditional on the status: a row that was already
+     * recovered by another publisher must not be overwritten.
+     */
     @Update("""
             UPDATE message_outbox
                SET status = 'PUBLISHED',
-                   published_at = CURRENT_TIMESTAMP(3)
+                   published_at = CURRENT_TIMESTAMP(3),
+                   publishing_at = NULL
              WHERE id = #{id}
+               AND status = 'PUBLISHING'
             """)
     int markPublished(@Param("id") Long id);
 
+    /**
+     * Returns a row to the pending state.
+     *
+     * <p>The update is conditional on the status, so a recovery of another
+     * publisher is not undone.
+     */
     @Update("""
             UPDATE message_outbox
                SET status = 'PENDING',
-                   next_retry_at = #{nextRetryAt}
+                   next_retry_at = #{nextRetryAt},
+                   publishing_at = NULL
              WHERE id = #{id}
+               AND status = 'PUBLISHING'
             """)
     int reschedule(@Param("id") Long id, @Param("nextRetryAt") LocalDateTime nextRetryAt);
 
@@ -58,12 +82,16 @@ public interface MessageOutboxMapper extends BaseMapper<MessageOutbox> {
     /**
      * Returns rows that were claimed for publishing but never confirmed, so they can be retried
      * after a publisher crash.
+     *
+     * <p>The age of a claimed row is measured from the moment it was claimed: a row that was
+     * created long ago and is published right now is not stale.
      */
     @Select("""
             SELECT * FROM message_outbox
              WHERE status = 'PUBLISHING'
-               AND created_at < #{staleBefore}
-             ORDER BY created_at
+               AND publishing_at IS NOT NULL
+               AND publishing_at < #{staleBefore}
+             ORDER BY publishing_at
              LIMIT #{limit}
             """)
     List<MessageOutbox> findStalePublishing(@Param("staleBefore") LocalDateTime staleBefore,

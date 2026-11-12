@@ -54,6 +54,9 @@ def create_app(
     application without any infrastructure.
     """
     settings = settings or get_settings()
+    # A configuration that would expose the internal endpoints is refused
+    # before the service starts serving.
+    settings.validate()
     messaging_enabled = settings.messaging_enabled if start_messaging is None else start_messaging
     persistence_enabled = (
         settings.persistence_enabled if start_persistence is None else start_persistence
