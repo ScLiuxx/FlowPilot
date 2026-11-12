@@ -102,3 +102,10 @@ class InvocationTimeoutError(TransientError):
     default_code = "AG-TIMEOUT-001"
     default_category = ErrorCategory.TRANSIENT
     default_retryable = True
+
+
+#: Raised when the invocation was cancelled while it was running.
+class AgentCancelledError(BusinessError):
+    default_code = "AG-CANCELLED-001"
+    default_category = ErrorCategory.BUSINESS
+    default_retryable = False

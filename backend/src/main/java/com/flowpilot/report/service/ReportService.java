@@ -136,6 +136,9 @@ public class ReportService {
         content.put("issues", issues);
         content.put("releases", releases);
         content.put("analysis", analysis);
+        // The scope of the data: the report states it, so that a sample is
+        // never presented as the full history of the repository.
+        content.put("collection", collectionScope(metrics, issues, activity, releases));
 
         content.put("summary", buildSummary(repository, activity, issues, releases, analysis));
         content.put("riskLevel", assessRiskLevel(activity, issues, releases, analysis));
@@ -151,6 +154,49 @@ public class ReportService {
             }
         }
         return Map.of();
+    }
+
+    /**
+     * Collects the scope of the data from the metric groups.
+     *
+     * <p>The aggregation node already merged the metadata of the collections;
+     * a workflow without it falls back to the metadata of the single groups.
+     */
+    private Map<String, Object> collectionScope(Map<String, Object> metrics,
+                                                Map<String, Object> issues,
+                                                Map<String, Object> activity,
+                                                Map<String, Object> releases) {
+        Map<String, Object> scope = asMap(metrics.get("collection"));
+        if (!scope.isEmpty()) {
+            return scope;
+        }
+        Map<String, Object> merged = new LinkedHashMap<>();
+        boolean complete = true;
+        boolean exact = true;
+        String collectedAt = null;
+        for (Map<String, Object> group : List.of(issues, activity, releases)) {
+            Map<String, Object> collection = asMap(group.get("collection"));
+            if (collection.isEmpty()) {
+                continue;
+            }
+            if (Boolean.FALSE.equals(collection.get("complete"))) {
+                complete = false;
+            }
+            if (Boolean.FALSE.equals(collection.get("countExact"))) {
+                exact = false;
+            }
+            Object at = collection.get("collectedAt");
+            if (collectedAt == null && at != null) {
+                collectedAt = String.valueOf(at);
+            }
+        }
+        merged.put("complete", complete);
+        merged.put("countExact", exact);
+        merged.put("sampled", !exact || !complete);
+        if (collectedAt != null) {
+            merged.put("collectedAt", collectedAt);
+        }
+        return merged;
     }
 
     private String buildSummary(Map<String, Object> repository, Map<String, Object> activity,
@@ -171,6 +217,9 @@ public class ReportService {
         Object openIssues = issues.get("openIssues");
         if (openIssues != null) {
             summary.append("，当前有 ").append(openIssues).append(" 个未关闭 Issue");
+            if (Boolean.FALSE.equals(issues.get("countsExact"))) {
+                summary.append("（本次采集数量）");
+            }
         }
         Object latestVersion = releases.get("latestVersion");
         if (latestVersion != null) {
@@ -292,6 +341,8 @@ public class ReportService {
             markdown.append("- 距今天数：").append(releases.get("daysSinceLastRelease")).append("\n\n");
         }
 
+        appendDataScope(markdown, content);
+
         Map<String, Object> analysis = asMap(content.get("analysis"));
         if (!analysis.isEmpty()) {
             markdown.append("## 5. 智能分析结论\n\n");
@@ -317,6 +368,37 @@ public class ReportService {
             list.forEach(item -> markdown.append("- ").append(item).append("\n"));
         } else {
             markdown.append(String.valueOf(value)).append("\n");
+        }
+        markdown.append("\n");
+    }
+
+    /**
+     * States the scope of the collected data.
+     *
+     * <p>The numbers of a report are only meaningful together with the question
+     * whether they cover the whole repository or only the collected sample. A
+     * sample must never be presented as the full history.
+     */
+    private void appendDataScope(StringBuilder markdown, Map<String, Object> content) {
+        Map<String, Object> collection = asMap(content.get("collection"));
+        if (collection.isEmpty()) {
+            return;
+        }
+        markdown.append("## 数据采集说明\n\n");
+        markdown.append("- 采集时间：").append(collection.getOrDefault("collectedAt", "未知"))
+                .append("\n");
+        boolean exact = Boolean.TRUE.equals(collection.get("countExact"));
+        boolean complete = Boolean.TRUE.equals(collection.get("complete"));
+        markdown.append("- 统计口径：")
+                .append(exact ? "精确总数（GitHub 直接返回的匹配总数）" : "本次采集数量（分页采样）")
+                .append("\n");
+        markdown.append("- 是否完整采集：").append(complete ? "是" : "否（仅采集了部分数据）")
+                .append("\n");
+        markdown.append("- 是否为抽样结果：")
+                .append(Boolean.TRUE.equals(collection.get("sampled")) ? "是" : "否").append("\n");
+        Object pages = collection.get("totalPages");
+        if (pages != null) {
+            markdown.append("- 数据集总页数：").append(pages).append("\n");
         }
         markdown.append("\n");
     }
@@ -373,12 +455,19 @@ public class ReportService {
         return report;
     }
 
-    public PageResult<AnalysisReport> page(int page, int size, String status) {
-        LambdaQueryWrapper<AnalysisReport> query = new LambdaQueryWrapper<AnalysisReport>()
-                .eq(status != null && !status.isBlank(), AnalysisReport::getStatus, status)
-                .orderByDesc(AnalysisReport::getCreatedAt);
-        Page<AnalysisReport> result = reportMapper.selectPage(new Page<>(page, size), query);
-        return PageResult.of(result.getTotal(), page, size, result.getRecords());
+    /**
+     * The reports the user may see.
+     *
+     * <p>A report belongs to the user of its execution. The list therefore joins the execution
+     * table and filters by its owner, so a user never sees the report of somebody else. An
+     * administrator sees all of them.
+     *
+     * @param userId the owner of the executions, {@code null} returns the reports of everybody
+     */
+    public PageResult<AnalysisReport> page(int page, int size, String status, Long userId) {
+        long total = reportMapper.countByOwner(userId, status);
+        List<AnalysisReport> records = reportMapper.findByOwner(userId, status, size, (page - 1) * size);
+        return PageResult.of(total, page, size, records);
     }
 
     public List<AnalysisReport> recent(int limit) {

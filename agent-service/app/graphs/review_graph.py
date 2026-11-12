@@ -109,6 +109,7 @@ async def finalize_node(state: AgentState, runtime: Runtime) -> dict[str, Any]:
     context: AgentExecutionContext = runtime.context
     iterations = int(state.get("iterations", 0)) + 1
     context.check_iterations(iterations)
+    await context.check_cancelled()
 
     review = state.get("review") or {}
     report = dict(state.get("report") or {})

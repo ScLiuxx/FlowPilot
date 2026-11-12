@@ -16,4 +16,48 @@ public interface AnalysisReportMapper extends BaseMapper<AnalysisReport> {
 
     @Select("SELECT * FROM analysis_report ORDER BY created_at DESC LIMIT #{limit}")
     List<AnalysisReport> findRecent(@Param("limit") int limit);
+
+    /**
+     * The reports of the executions of one user.
+     *
+     * <p>A report belongs to the user of its execution, so the list has to join the execution
+     * table. Filtering only on the report table would expose the reports of every user.
+     *
+     * @param userId the owner of the executions, {@code null} returns the reports of everybody
+     */
+    @Select("""
+            <script>
+            SELECT r.* FROM analysis_report r
+             <if test="userId != null">
+              JOIN workflow_execution e ON e.id = r.workflow_execution_id
+              WHERE e.user_id = #{userId}
+             </if>
+             <if test="status != null and status != ''">
+               AND r.status = #{status}
+             </if>
+             ORDER BY r.created_at DESC
+             LIMIT #{limit} OFFSET #{offset}
+            </script>
+            """)
+    List<AnalysisReport> findByOwner(@Param("userId") Long userId,
+                                     @Param("status") String status,
+                                     @Param("limit") int limit,
+                                     @Param("offset") int offset);
+
+    /**
+     * The number of the reports of the executions of one user.
+     */
+    @Select("""
+            <script>
+            SELECT COUNT(*) FROM analysis_report r
+             <if test="userId != null">
+              JOIN workflow_execution e ON e.id = r.workflow_execution_id
+              WHERE e.user_id = #{userId}
+             </if>
+             <if test="status != null and status != ''">
+               AND r.status = #{status}
+             </if>
+            </script>
+            """)
+    long countByOwner(@Param("userId") Long userId, @Param("status") String status);
 }

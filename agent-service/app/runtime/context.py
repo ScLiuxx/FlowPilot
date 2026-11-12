@@ -19,7 +19,7 @@ from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable
 
 from app.config.logging import get_logger
-from app.runtime.errors import BudgetExceededError
+from app.runtime.errors import AgentCancelledError, BudgetExceededError
 
 logger = get_logger(__name__)
 
@@ -196,6 +196,9 @@ class AgentExecutionContext:
     node_execution_id: int | None = None
     attempt_no: int | None = None
     correlation_id: str | None = None
+    #: Asks whether the invocation was cancelled. The executor wires it to the
+    #: store, so a cancel that was handled by another replica is noticed too.
+    cancel_probe: Callable[[], Awaitable[bool]] | None = None
 
     # -- statistics ------------------------------------------------------
     async def call_tool(self, operation: Callable[[], Any | Awaitable[Any]]) -> Any:
@@ -209,6 +212,20 @@ class AgentExecutionContext:
         except Exception:
             self.counters.record_tool_failure()
             raise
+
+    # -- cooperative cancellation -------------------------------------------
+    async def check_cancelled(self) -> None:
+        """Stop the run when the invocation was cancelled.
+
+        The check is cheap: the probe is throttled by the executor, so a node
+        can call it before every tool call and every model call.
+        """
+        if self.cancel_probe is None:
+            return
+        if await self.cancel_probe():
+            raise AgentCancelledError(
+                "the agent invocation was cancelled while it was running"
+            )
 
     # -- budget enforcement -------------------------------------------------
     def check_iterations(self, iterations: int) -> None:

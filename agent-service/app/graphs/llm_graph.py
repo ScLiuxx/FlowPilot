@@ -104,7 +104,9 @@ async def llm_node(state: AgentState, runtime: Runtime) -> dict[str, Any]:
     messages = build_messages(
         TASK_LLM_SUMMARY, _LLM_INSTRUCTIONS, _build_content(payload)
     )
+    await context.check_cancelled()
     result = await context.llm.ainvoke(messages)
+    await context.check_cancelled()
     context.counters.record_llm_call()
 
     input_tokens = int(state.get("inputTokens", 0)) + result.input_tokens

@@ -299,6 +299,12 @@ class GitHubTool:
         return commits
 
     async def list_issues(self, ref: str, state: str = "open", per_page: int = 10) -> list[dict[str, Any]]:
+        """The issues of a repository.
+
+        The GitHub endpoint answers with the open issues by default and mixes
+        the pull requests into the result. The state is therefore part of the
+        call, so the closed issues can be collected separately.
+        """
         owner_repo = normalize_repository_ref(ref)
         data = await self._operation(
             "list_issues",
@@ -326,6 +332,14 @@ class GitHubTool:
                 }
             )
         return issues
+
+    async def list_closed_issues(self, ref: str, per_page: int = 10) -> list[dict[str, Any]]:
+        """The closed issues of a repository.
+
+        The issues endpoint only answers with the open issues by default, so the
+        closed ones have to be asked for separately.
+        """
+        return await self.list_issues(ref, state="closed", per_page=per_page)
 
     async def list_pull_requests(self, ref: str, state: str = "open", per_page: int = 10) -> list[dict[str, Any]]:
         owner_repo = normalize_repository_ref(ref)

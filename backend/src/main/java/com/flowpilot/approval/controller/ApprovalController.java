@@ -49,7 +49,10 @@ public class ApprovalController {
 
     @GetMapping("/{approvalId}")
     public Result<Map<String, Object>> get(@PathVariable Long approvalId) {
-        return Result.success(toResponse(approvalService.get(approvalId)));
+        // The permission check lives in the service, so every path that reads an approval has
+        // the same rule: the caller owns the execution the approval belongs to.
+        return Result.success(toResponse(approvalService.getAccessible(
+                approvalId, CurrentUser.requireId(), CurrentUser.isAdmin())));
     }
 
     @PostMapping("/{approvalId}/decision")

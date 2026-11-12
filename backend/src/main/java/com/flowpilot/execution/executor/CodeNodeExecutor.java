@@ -67,6 +67,14 @@ public class CodeNodeExecutor implements NodeExecutor {
         output.put("activity", activityMetrics(context));
         output.put("issues", issueMetrics(context));
         output.put("releases", releaseMetrics(context));
+        // The scope of the data: the report states it, so a sample is never
+        // presented as the full history of the repository.
+        output.put("collection", collectionMeta(
+                upstream(context, "collect_commits").get("body"),
+                upstreamAny(context, "collect_open_issues", "collect_issues").get("body"),
+                upstream(context, "collect_closed_issues").get("body"),
+                upstream(context, "collect_pull_requests").get("body"),
+                upstream(context, "collect_releases").get("body")));
         return output;
     }
 
@@ -96,13 +104,17 @@ public class CodeNodeExecutor implements NodeExecutor {
 
     /**
      * Derives the commit activity statistics of the last 30 days.
+     *
+     * <p>The number of commits is the number that was collected in this run: the
+     * {@code totalPages} of the response tells whether more pages exist. The
+     * metadata therefore states whether the number is complete.
      */
     private Map<String, Object> activityMetrics(NodeContext context) {
         Map<String, Object> payload = upstream(context, "collect_commits");
         Object body = payload.get("body");
         List<Map<String, Object>> commits = asList(body);
         Map<String, Object> output = new LinkedHashMap<>();
-        output.put("totalCommits", totalCount(body, commits));
+        output.put("totalCommits", collectedCount(body, commits));
         output.put("analyzedCommits", commits.size());
         output.put("recentCommits", countRecent(commits, 30));
         output.put("authors", countDistinctAuthors(commits));
@@ -111,35 +123,73 @@ public class CodeNodeExecutor implements NodeExecutor {
                 .limit(20)
                 .map(commit -> nested(commit, "commit", "message"))
                 .toList());
+        output.put("collection", collectionMeta(body));
         return output;
     }
 
     /**
-     * Derives the issue statistics, separating issues from pull requests.
+     * Derives the issue statistics.
+     *
+     * <p>The open issues, the closed issues and the pull requests are collected
+     * separately: the issues endpoint only answers with the open issues by
+     * default, so the closed ones would never show up in a single collection.
+     * Each collection reports its exact number when the endpoint knows it, and
+     * the metadata states whether the numbers are complete.
      */
     private Map<String, Object> issueMetrics(NodeContext context) {
-        Map<String, Object> payload = upstream(context, "collect_issues");
-        Object body = payload.get("body");
-        List<Map<String, Object>> issues = asList(body);
-        long pullRequests = issues.stream().filter(issue -> issue.get("pull_request") != null).count();
-        List<Map<String, Object>> pureIssues = issues.stream()
+        Map<String, Object> openPayload = upstreamAny(context, "collect_open_issues", "collect_issues");
+        Map<String, Object> closedPayload = upstream(context, "collect_closed_issues");
+        Map<String, Object> pullPayload = upstream(context, "collect_pull_requests");
+
+        Object openBody = openPayload.get("body");
+        Object closedBody = closedPayload.get("body");
+        Object pullBody = pullPayload.get("body");
+
+        List<Map<String, Object>> openItems = asList(openBody);
+        List<Map<String, Object>> closedItems = asList(closedBody);
+        List<Map<String, Object>> pullItems = asList(pullBody);
+
+        // The fallback collection (the old "collect_issues" node) holds the
+        // open issues and the pull requests together.
+        long pullRequests = pullPayload.isEmpty()
+                ? openItems.stream().filter(issue -> issue.get("pull_request") != null).count()
+                : collectedCount(pullBody, pullItems);
+
+        List<Map<String, Object>> openIssues = openItems.stream()
                 .filter(issue -> issue.get("pull_request") == null)
                 .toList();
-        long closed = pureIssues.stream().filter(issue -> "closed".equals(issue.get("state"))).count();
+        List<Map<String, Object>> closedIssues = closedItems.stream()
+                .filter(issue -> issue.get("pull_request") == null)
+                .toList();
+        if (closedItems.isEmpty() && closedPayload.isEmpty()) {
+            // The fallback collection: the closed issues are the ones the
+            // endpoint returned with the closed state.
+            closedIssues = openItems.stream()
+                    .filter(issue -> issue.get("pull_request") == null)
+                    .filter(issue -> "closed".equals(issue.get("state")))
+                    .toList();
+        }
+
+        long openCount = collectedCount(openBody, openIssues);
+        long closedCount = collectedCount(closedBody, closedIssues);
+        boolean exact = countIsExact(openBody) && countIsExact(closedBody) && countIsExact(pullBody);
 
         Map<String, Object> output = new LinkedHashMap<>();
-        output.put("totalItems", totalCount(body, issues));
-        output.put("analyzedItems", issues.size());
-        output.put("totalIssues", pureIssues.size());
-        output.put("openIssues", pureIssues.size() - closed);
-        output.put("closedIssues", closed);
+        output.put("totalItems", openCount + closedCount);
+        output.put("analyzedItems", openIssues.size() + closedIssues.size() + pullItems.size());
+        output.put("totalIssues", openCount + closedCount);
+        output.put("openIssues", openCount);
+        output.put("closedIssues", closedCount);
         output.put("pullRequests", pullRequests);
-        output.put("recentIssues", countRecent(pureIssues, 30));
-        output.put("openIssueTitles", pureIssues.stream()
+        output.put("recentIssues", countRecent(openIssues, 30));
+        output.put("openIssueTitles", openIssues.stream()
                 .filter(issue -> "open".equals(issue.get("state")))
                 .limit(20)
                 .map(issue -> issue.get("title"))
                 .toList());
+        // The numbers are only exact when every collection knew the total.
+        output.put("countsExact", exact);
+        output.put("collection", collectionMeta(openBody, closedBody, pullBody));
         return output;
     }
 
@@ -151,7 +201,7 @@ public class CodeNodeExecutor implements NodeExecutor {
         Object body = payload.get("body");
         List<Map<String, Object>> releases = asList(body);
         Map<String, Object> output = new LinkedHashMap<>();
-        output.put("totalReleases", totalCount(body, releases));
+        output.put("totalReleases", collectedCount(body, releases));
         output.put("analyzedReleases", releases.size());
         output.put("latestVersion", releases.isEmpty() ? null : nested(releases.get(0), "tag_name"));
         output.put("latestPublishedAt", releases.isEmpty() ? null
@@ -164,6 +214,7 @@ public class CodeNodeExecutor implements NodeExecutor {
                 .toList());
         output.put("daysSinceLastRelease", releases.isEmpty() ? null
                 : daysSince((String) nested(releases.get(0), "published_at")));
+        output.put("collection", collectionMeta(body));
         return output;
     }
 
@@ -174,7 +225,8 @@ public class CodeNodeExecutor implements NodeExecutor {
         Map<String, Object> output = new LinkedHashMap<>();
         output.put("repository", upstream(context, "collect_repository"));
         output.put("commits", upstream(context, "collect_commits"));
-        output.put("issues", upstream(context, "collect_issues"));
+        output.put("issues", upstreamAny(context, "collect_open_issues", "collect_issues"));
+        output.put("closedIssues", upstream(context, "collect_closed_issues"));
         output.put("pullRequests", upstream(context, "collect_pull_requests"));
         output.put("releases", upstream(context, "collect_releases"));
         return output;
@@ -196,6 +248,23 @@ public class CodeNodeExecutor implements NodeExecutor {
             return Map.of();
         }
         return asMap(value);
+    }
+
+    /**
+     * Reads the first of several upstream nodes that exists.
+     *
+     * <p>The collection nodes were renamed when the open and the closed issues
+     * were collected separately. The old node is still read as a fallback, so
+     * an existing workflow keeps working.
+     */
+    private Map<String, Object> upstreamAny(NodeContext context, String... nodeKeys) {
+        for (String nodeKey : nodeKeys) {
+            Map<String, Object> value = upstream(context, nodeKey);
+            if (!value.isEmpty()) {
+                return value;
+            }
+        }
+        return Map.of();
     }
 
     @SuppressWarnings("unchecked")
@@ -243,6 +312,71 @@ public class CodeNodeExecutor implements NodeExecutor {
             return number.longValue();
         }
         return items.size();
+    }
+
+    /**
+     * The number of items a collection gathered.
+     *
+     * <p>The count of the summary is the number the endpoint reported: the exact
+     * total for the search endpoints, the number of collected items for the
+     * paginated ones.
+     */
+    private long collectedCount(Object body, List<Map<String, Object>> items) {
+        return totalCount(body, items);
+    }
+
+    /**
+     * Whether the count of a collection is the exact total.
+     */
+    private boolean countIsExact(Object body) {
+        Map<String, Object> collection = collectionOf(body);
+        return Boolean.TRUE.equals(collection.get("countExact"));
+    }
+
+    /**
+     * The collection metadata of a summarised response.
+     */
+    private Map<String, Object> collectionOf(Object body) {
+        if (body instanceof Map<?, ?> map && map.get("collection") instanceof Map<?, ?> collection) {
+            return asMap(collection);
+        }
+        return Map.of();
+    }
+
+    /**
+     * Merges the collection metadata of several responses.
+     *
+     * <p>The merged metadata states whether <em>every</em> collection was
+     * complete, and it keeps the window the data was collected in.
+     */
+    private Map<String, Object> collectionMeta(Object... bodies) {
+        Map<String, Object> merged = new LinkedHashMap<>();
+        boolean complete = true;
+        boolean exact = true;
+        String collectedAt = null;
+        for (Object body : bodies) {
+            Map<String, Object> collection = collectionOf(body);
+            if (collection.isEmpty()) {
+                continue;
+            }
+            if (Boolean.FALSE.equals(collection.get("complete"))) {
+                complete = false;
+            }
+            if (Boolean.FALSE.equals(collection.get("countExact"))) {
+                exact = false;
+            }
+            Object at = collection.get("collectedAt");
+            if (collectedAt == null && at != null) {
+                collectedAt = String.valueOf(at);
+            }
+        }
+        merged.put("complete", complete);
+        merged.put("countExact", exact);
+        merged.put("sampled", !exact || !complete);
+        if (collectedAt != null) {
+            merged.put("collectedAt", collectedAt);
+        }
+        return merged;
     }
 
     private Object nested(Map<String, Object> source, String... keys) {

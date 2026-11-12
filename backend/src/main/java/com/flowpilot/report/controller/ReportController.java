@@ -37,9 +37,12 @@ public class ReportController {
             @RequestParam(defaultValue = "1") int page,
             @RequestParam(defaultValue = "20") int size,
             @RequestParam(required = false) String status) {
-        PageResult<AnalysisReport> result = reportService.page(page, size, status);
+        // A report belongs to the user of its execution. The list therefore only shows the
+        // reports of the own executions, unless the caller is an administrator.
+        Long userId = CurrentUser.isAdmin() ? null : CurrentUser.requireId();
+        PageResult<AnalysisReport> result = reportService.page(page, size, status, userId);
         List<Map<String, Object>> records = result.getRecords().stream()
-                .map(ReportController::toResponse)
+                .map(ReportController::toSummaryResponse)
                 .toList();
         return Result.success(PageResult.of(result.getTotal(), result.getPage(), result.getSize(), records));
     }
@@ -76,6 +79,20 @@ public class ReportController {
     }
 
     static Map<String, Object> toResponse(AnalysisReport report) {
+        Map<String, Object> response = toSummaryResponse(report);
+        response.put("content", report.getContentJson() == null
+                ? null : JsonUtils.toMap(report.getContentJson()));
+        response.put("markdownContent", report.getMarkdownContent());
+        return response;
+    }
+
+    /**
+     * The summary of a report, without its content.
+     *
+     * <p>The list of the reports only shows the summary. The content and the markdown are large
+     * and belong to the detail of a single report, so the list does not carry them.
+     */
+    static Map<String, Object> toSummaryResponse(AnalysisReport report) {
         Map<String, Object> response = new LinkedHashMap<>();
         response.put("reportId", Ids.of(report.getId()));
         response.put("reportNo", report.getReportNo());
@@ -85,9 +102,6 @@ public class ReportController {
         response.put("reportType", report.getReportType());
         response.put("status", report.getStatus());
         response.put("summary", report.getSummary());
-        response.put("content", report.getContentJson() == null
-                ? null : JsonUtils.toMap(report.getContentJson()));
-        response.put("markdownContent", report.getMarkdownContent());
         response.put("contentHash", report.getContentHash());
         response.put("generatedAt", report.getGeneratedAt() == null
                 ? null : report.getGeneratedAt().toString());

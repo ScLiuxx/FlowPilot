@@ -47,7 +47,7 @@ def _repository_from_input(payload: dict[str, Any]) -> str | None:
 def _precollected_facts(payload: dict[str, Any]) -> dict[str, Any]:
     """Facts the Java backend already collected through HTTP nodes."""
     facts: dict[str, Any] = {}
-    for key in ("repository", "commits", "issues", "pullRequests", "releases"):
+    for key in ("repository", "commits", "issues", "closedIssues", "pullRequests", "releases"):
         value = payload.get(key)
         if isinstance(value, dict):
             facts[key] = value
@@ -69,30 +69,45 @@ async def gather_node(state: AgentState, runtime: Runtime) -> dict[str, Any]:
     if repository and github is not None:
         # The tool call budget is reserved *before* the call is made, so the
         # agent never performs more calls than allowed.
+        await context.check_cancelled()
         tool_calls = context.consume_tool_call(tool_calls)
         repository_info = await context.call_tool(
             lambda: github.get_repository(repository)
         )
         facts["repository"] = repository_info
 
+        await context.check_cancelled()
         tool_calls = context.consume_tool_call(tool_calls)
         commits = await context.call_tool(lambda: github.list_commits(repository))
         facts["commits"] = commits
 
+        await context.check_cancelled()
         tool_calls = context.consume_tool_call(tool_calls)
         issues = await context.call_tool(lambda: github.list_issues(repository))
         facts["issues"] = issues
 
+        # The issues endpoint only answers with the open issues by default, so
+        # the closed ones have to be collected separately.
+        await context.check_cancelled()
+        tool_calls = context.consume_tool_call(tool_calls)
+        closed_issues = await context.call_tool(
+            lambda: github.list_closed_issues(repository)
+        )
+        facts["closedIssues"] = closed_issues
+
+        await context.check_cancelled()
         tool_calls = context.consume_tool_call(tool_calls)
         pull_requests = await context.call_tool(
             lambda: github.list_pull_requests(repository)
         )
         facts["pullRequests"] = pull_requests
 
+        await context.check_cancelled()
         tool_calls = context.consume_tool_call(tool_calls)
         releases = await context.call_tool(lambda: github.list_releases(repository))
         facts["releases"] = releases
 
+        await context.check_cancelled()
         tool_calls = context.consume_tool_call(tool_calls)
         readme = await context.call_tool(lambda: github.get_readme(repository))
         facts["readme"] = readme
@@ -122,9 +137,14 @@ def _analysis_content(repository: str, facts: dict[str, Any]) -> str:
         lines.append(f"recentCommits: {len(commits)}")
     issues = facts.get("issues")
     if isinstance(issues, list):
-        lines.append(f"openIssues: {len(issues)}")
+        # The list is a sample of the open issues, not the total of the
+        # repository: the number must not be presented as the total.
+        lines.append(f"openIssuesCollected: {len(issues)}")
     elif isinstance(issues, dict) and issues.get("open") is not None:
         lines.append(f"openIssues: {issues['open']}")
+    closed_issues = facts.get("closedIssues")
+    if isinstance(closed_issues, list):
+        lines.append(f"closedIssuesCollected: {len(closed_issues)}")
 
     blocks = ["\n".join(lines)]
     readme = facts.get("readme")
@@ -154,7 +174,9 @@ async def analyze_node(state: AgentState, runtime: Runtime) -> dict[str, Any]:
         _ANALYSIS_INSTRUCTIONS,
         _analysis_content(repository, facts),
     )
+    await context.check_cancelled()
     result = await context.llm.ainvoke(messages)
+    await context.check_cancelled()
     analysis = result.as_json()
     context.counters.record_llm_call()
 
@@ -237,6 +259,7 @@ async def report_node(state: AgentState, runtime: Runtime) -> dict[str, Any]:
     context: AgentExecutionContext = runtime.context
     iterations = int(state.get("iterations", 0)) + 1
     context.check_iterations(iterations)
+    await context.check_cancelled()
 
     repository = state.get("repository") or "unknown/unknown"
     report = build_report(

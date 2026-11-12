@@ -311,6 +311,24 @@ public class ApprovalService {
         return approval;
     }
 
+    /**
+     * The approval, if the user is allowed to see it.
+     *
+     * <p>An approval belongs to the execution it belongs to, and an execution belongs to the user
+     * that started it. Without the check, a user who knows the id of an approval could read the
+     * request and the decision of somebody else.
+     *
+     * @param userId the caller, {@code null} skips the check
+     * @param admin  whether the caller may see the approvals of everybody
+     */
+    public ApprovalRecord getAccessible(Long approvalId, Long userId, boolean admin) {
+        ApprovalRecord approval = get(approvalId);
+        if (!admin) {
+            requireOwnership(approval, userId);
+        }
+        return approval;
+    }
+
     public PageResult<ApprovalRecord> page(int page, int size, String status) {
         return page(page, size, status, null);
     }
@@ -345,7 +363,10 @@ public class ApprovalService {
      */
     private void requireOwnership(ApprovalRecord approval, Long userId) {
         if (userId == null) {
-            return;
+            // Without a user there is nothing to compare the owner with. The caller that skips
+            // the check has to be an administrator, and it does that through the admin flag of
+            // getAccessible instead of an empty user id.
+            throw new BizException(ErrorCode.AP_FORBIDDEN);
         }
         WorkflowExecution execution = executionMapper.selectById(approval.getWorkflowExecutionId());
         if (execution == null) {

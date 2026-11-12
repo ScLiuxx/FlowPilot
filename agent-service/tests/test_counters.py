@@ -23,7 +23,9 @@ async def test_the_usage_reports_the_llm_and_the_tool_calls(executor):
 
     usage = outcome.payload["usage"]
     assert usage["llmCalls"] == 1
-    assert usage["toolCalls"] == 6  # the six read only GitHub operations
+    # The six read only GitHub operations plus the closed issues, which the
+    # issues endpoint does not return by default.
+    assert usage["toolCalls"] == 7
     assert usage["toolFailures"] == 0
 
 
@@ -81,6 +83,6 @@ async def test_the_counters_are_stored_in_the_record(executor, store):
         "inputTokens": record.usage["inputTokens"],
         "outputTokens": record.usage["outputTokens"],
         "llmCalls": 1,
-        "toolCalls": 6,
+        "toolCalls": 7,
         "toolFailures": 0,
     }

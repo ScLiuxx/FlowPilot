@@ -39,8 +39,19 @@ STATUS_FAILED = "FAILED"
 STATUS_INTERRUPTED = "INTERRUPTED"
 STATUS_CANCELLED = "CANCELLED"
 
-#: A resume request that has been claimed but is not finished yet.
+#: A resume request that has been claimed and is currently being continued.
+RESUME_CLAIMED = "CLAIMED"
+
+#: A resume request that is in flight — kept for the records written by an
+#: older version of the service.
 RESUME_PROCESSING = "PROCESSING"
+
+#: A resume request whose worker died: the lease expired and another worker
+#: may take it over.
+RESUME_RECOVERABLE = "RECOVERABLE"
+
+#: The states of a resume request that mean "the graph is being continued".
+RESUME_IN_FLIGHT = frozenset({RESUME_CLAIMED, RESUME_PROCESSING})
 
 #: Lifecycle of an outbox row.
 OUTBOX_PENDING = "PENDING"
@@ -50,6 +61,14 @@ OUTBOX_PUBLISHED = "PUBLISHED"
 TERMINAL_STATUSES = frozenset(
     {STATUS_SUCCEEDED, STATUS_FAILED, STATUS_INTERRUPTED, STATUS_CANCELLED}
 )
+
+
+class GuardRejected(Exception):
+    """A conditional write was rejected because the record moved on.
+
+    The invocation reached another terminal state (a cancel for example) while
+    the worker was still running. The late outcome must not be published.
+    """
 
 
 @dataclass
@@ -77,7 +96,14 @@ class ExecutionRecord:
 
 @dataclass
 class ResumeRecord:
-    """Idempotency ledger entry of a processed ``AgentResume``."""
+    """Idempotency ledger entry of a processed ``AgentResume``.
+
+    The lease columns make the resume recoverable: a worker that dies while it
+    continues the graph leaves the row in ``PROCESSING`` with an expired lease,
+    and another worker may take it over. ``lease_token`` is the fencing token of
+    the current owner — a worker whose lease was taken over must not write the
+    result anymore.
+    """
 
     invocation_id: int
     resume_request_id: str
@@ -85,7 +111,11 @@ class ResumeRecord:
     status: str
     payload: dict[str, Any] = field(default_factory=dict)
     checkpoint_id: str | None = None
+    lease_token: int = 0
+    lease_expire_at: datetime | None = None
+    takeover_count: int = 0
     created_at: datetime | None = None
+    updated_at: datetime | None = None
 
 
 @dataclass(frozen=True)
@@ -118,6 +148,24 @@ class OutboxRecord:
     next_retry_at: datetime | None = None
     created_at: datetime | None = None
     published_at: datetime | None = None
+
+
+@dataclass(frozen=True)
+class ResumeGuard:
+    """Fences a terminal write against the lease of a resume request.
+
+    The write is only applied while the resume request is still owned by the
+    writer: the lease token must match and the request must still be in
+    flight. A worker whose lease was taken over therefore cannot publish a
+    result anymore — and the result event and the ledger are written in the
+    same transaction, so the backend never learns about a stale result.
+    """
+
+    resume_request_id: str
+    lease_token: int
+    status: str
+    payload: dict[str, Any] = field(default_factory=dict)
+    checkpoint_id: str | None = None
 
 
 @runtime_checkable
@@ -161,8 +209,22 @@ class ExecutionRecordStore(Protocol):
         error: dict[str, Any] | None = None,
         usage: dict[str, Any] | None = None,
         outbox: OutboxMessage | None = None,
+        guard_statuses: tuple[str, ...] | None = None,
+        resume_guard: "ResumeGuard | None" = None,
     ) -> ExecutionRecord | None:
-        """Update the record and enqueue the result event in one transaction."""
+        """Update the record and enqueue the result event in one transaction.
+
+        :param guard_statuses: when given, the update only happens while the
+            record is in one of these states. The outbox row is written only
+            when the update was applied — a cancelled invocation therefore
+            never receives a late success event.
+        :param resume_guard: when given, the resume ledger is closed in the
+            same transaction, but only while the lease of the resume request
+            is still owned by this worker. A worker whose lease was taken over
+            therefore publishes nothing.
+        :return: the updated record, or ``None`` when a guard rejected the
+            write.
+        """
 
     async def claim_outbox_batch(self, *, limit: int = 20) -> list[OutboxRecord]:
         """Claim pending outbox rows for delivery."""
@@ -194,6 +256,7 @@ class ExecutionRecordStore(Protocol):
         status: str,
         payload: dict[str, Any] | None = None,
         checkpoint_id: str | None = None,
+        lease_expire_at: datetime | None = None,
     ) -> tuple[ResumeRecord, bool]: ...
 
     async def update_resume(
@@ -205,6 +268,53 @@ class ExecutionRecordStore(Protocol):
         payload: dict[str, Any] | None = None,
         checkpoint_id: str | None = None,
     ) -> ResumeRecord | None: ...
+
+    async def claim_resume_lease(
+        self,
+        invocation_id: int,
+        resume_request_id: str,
+        *,
+        lease_expire_at: datetime,
+        expected_lease_token: int | None = None,
+    ) -> ResumeRecord | None:
+        """Take over the lease of a resume request whose owner died.
+
+        The lease is what makes a resume recoverable: a worker that dies while
+        it continues the graph leaves the row in ``CLAIMED`` with an expired
+        lease, and another worker may take it over.
+
+        :param expected_lease_token: when given, the takeover only happens if
+            the stored token still has this value (compare and set). ``None``
+            only checks the expiry of the lease.
+        :return: the record with the new lease, or ``None`` when the lease
+            could not be taken.
+        """
+
+    async def renew_resume_lease(
+        self,
+        invocation_id: int,
+        resume_request_id: str,
+        *,
+        lease_token: int,
+        lease_expire_at: datetime,
+    ) -> bool:
+        """Extend the lease of a resume request while the graph is continued."""
+
+    async def complete_resume(
+        self,
+        invocation_id: int,
+        resume_request_id: str,
+        *,
+        lease_token: int,
+        status: str,
+        payload: dict[str, Any] | None = None,
+        checkpoint_id: str | None = None,
+    ) -> ResumeRecord | None:
+        """Close a resume request.
+
+        The update is conditional on the lease token, so a worker whose lease
+        was taken over cannot overwrite the result of the new owner.
+        """
 
     async def list_records(self, limit: int = 50) -> list[ExecutionRecord]: ...
 
@@ -302,10 +412,36 @@ class InMemoryExecutionRecordStore:
         error: dict[str, Any] | None = None,
         usage: dict[str, Any] | None = None,
         outbox: OutboxMessage | None = None,
+        guard_statuses: tuple[str, ...] | None = None,
+        resume_guard: ResumeGuard | None = None,
     ) -> ExecutionRecord | None:
         """Update the record and enqueue the result event atomically."""
         async with self._lock:
             record = self._records.get(invocation_id)
+            if guard_statuses is not None and record is not None:
+                if record.status not in guard_statuses:
+                    # The invocation reached another terminal state (a cancel
+                    # for example) — the late result must not be published.
+                    raise GuardRejected(
+                        f"the invocation {invocation_id} is in the state "
+                        f"{record.status}, not in {guard_statuses}"
+                    )
+            resume = None
+            if resume_guard is not None:
+                resume = self._resumes.get(
+                    (invocation_id, resume_guard.resume_request_id)
+                )
+                if (
+                    resume is None
+                    or resume.lease_token != resume_guard.lease_token
+                    or resume.status not in RESUME_IN_FLIGHT
+                ):
+                    # The lease of the resume was taken over: this worker must
+                    # not publish anything anymore.
+                    raise GuardRejected(
+                        f"the resume {resume_guard.resume_request_id} is no longer "
+                        f"owned by the lease {resume_guard.lease_token}"
+                    )
             if outbox is not None:
                 self._append_outbox(outbox)
             if record is None:
@@ -320,6 +456,13 @@ class InMemoryExecutionRecordStore:
             if usage is not None:
                 record.usage = dict(usage)
             record.updated_at = datetime.now(tz=timezone.utc)
+            if resume is not None and resume_guard is not None:
+                resume.status = resume_guard.status
+                resume.payload = dict(resume_guard.payload)
+                if resume_guard.checkpoint_id is not None:
+                    resume.checkpoint_id = resume_guard.checkpoint_id
+                resume.lease_expire_at = None
+                resume.updated_at = datetime.now(tz=timezone.utc)
             return _copy_record(record)
 
     def _append_outbox(self, message: OutboxMessage) -> OutboxRecord:
@@ -397,15 +540,7 @@ class InMemoryExecutionRecordStore:
             record = self._resumes.get((invocation_id, resume_request_id))
             if record is None:
                 return None
-            return ResumeRecord(
-                invocation_id=record.invocation_id,
-                resume_request_id=record.resume_request_id,
-                thread_id=record.thread_id,
-                status=record.status,
-                payload=dict(record.payload),
-                checkpoint_id=record.checkpoint_id,
-                created_at=record.created_at,
-            )
+            return _copy_resume(record)
 
     async def create_resume(
         self,
@@ -416,12 +551,14 @@ class InMemoryExecutionRecordStore:
         status: str,
         payload: dict[str, Any] | None = None,
         checkpoint_id: str | None = None,
+        lease_expire_at: datetime | None = None,
     ) -> tuple[ResumeRecord, bool]:
         async with self._lock:
             key = (invocation_id, resume_request_id)
             existing = self._resumes.get(key)
             if existing is not None:
-                return existing, False
+                return _copy_resume(existing), False
+            now = datetime.now(tz=timezone.utc)
             record = ResumeRecord(
                 invocation_id=invocation_id,
                 resume_request_id=resume_request_id,
@@ -429,10 +566,14 @@ class InMemoryExecutionRecordStore:
                 status=status,
                 payload=payload or {},
                 checkpoint_id=checkpoint_id,
-                created_at=datetime.now(tz=timezone.utc),
+                lease_token=1,
+                lease_expire_at=lease_expire_at,
+                takeover_count=0,
+                created_at=now,
+                updated_at=now,
             )
             self._resumes[key] = record
-            return record, True
+            return _copy_resume(record), True
 
     async def update_resume(
         self,
@@ -452,15 +593,76 @@ class InMemoryExecutionRecordStore:
                 record.payload = payload
             if checkpoint_id is not None:
                 record.checkpoint_id = checkpoint_id
-            return ResumeRecord(
-                invocation_id=record.invocation_id,
-                resume_request_id=record.resume_request_id,
-                thread_id=record.thread_id,
-                status=record.status,
-                payload=dict(record.payload),
-                checkpoint_id=record.checkpoint_id,
-                created_at=record.created_at,
-            )
+            record.updated_at = datetime.now(tz=timezone.utc)
+            return _copy_resume(record)
+
+    async def claim_resume_lease(
+        self,
+        invocation_id: int,
+        resume_request_id: str,
+        *,
+        lease_expire_at: datetime,
+        expected_lease_token: int | None = None,
+    ) -> ResumeRecord | None:
+        async with self._lock:
+            record = self._resumes.get((invocation_id, resume_request_id))
+            if record is None:
+                return None
+            now = datetime.now(tz=timezone.utc)
+            if record.status not in RESUME_IN_FLIGHT:
+                return None
+            if expected_lease_token is not None and record.lease_token != expected_lease_token:
+                # Another worker already took the lease over.
+                return None
+            if record.lease_expire_at is not None and record.lease_expire_at > now:
+                # The current owner still holds a valid lease.
+                return None
+            record.lease_token += 1
+            record.takeover_count += 1
+            record.lease_expire_at = lease_expire_at
+            record.status = RESUME_CLAIMED
+            record.updated_at = now
+            return _copy_resume(record)
+
+    async def renew_resume_lease(
+        self,
+        invocation_id: int,
+        resume_request_id: str,
+        *,
+        lease_token: int,
+        lease_expire_at: datetime,
+    ) -> bool:
+        async with self._lock:
+            record = self._resumes.get((invocation_id, resume_request_id))
+            if record is None or record.lease_token != lease_token:
+                return False
+            if record.status not in RESUME_IN_FLIGHT:
+                return False
+            record.lease_expire_at = lease_expire_at
+            record.updated_at = datetime.now(tz=timezone.utc)
+            return True
+
+    async def complete_resume(
+        self,
+        invocation_id: int,
+        resume_request_id: str,
+        *,
+        lease_token: int,
+        status: str,
+        payload: dict[str, Any] | None = None,
+        checkpoint_id: str | None = None,
+    ) -> ResumeRecord | None:
+        async with self._lock:
+            record = self._resumes.get((invocation_id, resume_request_id))
+            if record is None or record.lease_token != lease_token:
+                return None
+            record.status = status
+            if payload is not None:
+                record.payload = payload
+            if checkpoint_id is not None:
+                record.checkpoint_id = checkpoint_id
+            record.updated_at = datetime.now(tz=timezone.utc)
+            return _copy_resume(record)
 
     async def list_records(self, limit: int = 50) -> list[ExecutionRecord]:
         async with self._lock:
@@ -486,6 +688,22 @@ def _copy_record(record: ExecutionRecord) -> ExecutionRecord:
         usage=dict(record.usage) if record.usage else record.usage,
         resume_request_id=record.resume_request_id,
         message_id=record.message_id,
+        created_at=record.created_at,
+        updated_at=record.updated_at,
+    )
+
+
+def _copy_resume(record: ResumeRecord) -> ResumeRecord:
+    return ResumeRecord(
+        invocation_id=record.invocation_id,
+        resume_request_id=record.resume_request_id,
+        thread_id=record.thread_id,
+        status=record.status,
+        payload=dict(record.payload),
+        checkpoint_id=record.checkpoint_id,
+        lease_token=record.lease_token,
+        lease_expire_at=record.lease_expire_at,
+        takeover_count=record.takeover_count,
         created_at=record.created_at,
         updated_at=record.updated_at,
     )
@@ -661,17 +879,80 @@ class PostgresExecutionRecordStore:
         error: dict[str, Any] | None = None,
         usage: dict[str, Any] | None = None,
         outbox: OutboxMessage | None = None,
+        guard_statuses: tuple[str, ...] | None = None,
+        resume_guard: ResumeGuard | None = None,
     ) -> ExecutionRecord | None:
         """Update the record and enqueue the result event in one transaction.
 
         The outbox row and the execution record are committed together: the
         result event can therefore never be lost, and the record can never
         claim a result that was not enqueued.
+
+        ``guard_statuses`` makes the update conditional: the row is only
+        updated (and the event only enqueued) while the record is in one of
+        the given states. A cancelled invocation therefore never receives a
+        late success event.
+
+        ``resume_guard`` closes the resume ledger in the same transaction and
+        only while the lease of the resume request is still owned by this
+        worker — a worker whose lease was taken over publishes nothing.
         """
         pool = self._require_pool()
         async with pool.connection() as conn:
             try:
                 async with conn.cursor() as cur:
+                    if resume_guard is not None:
+                        await cur.execute(
+                            """
+                            UPDATE agent_resume_record
+                            SET status = %s,
+                                payload = COALESCE(%s::jsonb, payload),
+                                checkpoint_id = COALESCE(%s, checkpoint_id),
+                                lease_expire_at = NULL,
+                                updated_at = now()
+                            WHERE invocation_id = %s
+                              AND resume_request_id = %s
+                              AND lease_token = %s
+                              AND status = ANY(%s)
+                            """,
+                            (
+                                resume_guard.status,
+                                _json(resume_guard.payload),
+                                resume_guard.checkpoint_id,
+                                invocation_id,
+                                resume_guard.resume_request_id,
+                                resume_guard.lease_token,
+                                list(RESUME_IN_FLIGHT),
+                            ),
+                        )
+                        if cur.rowcount != 1:
+                            # The lease of the resume was taken over: this
+                            # worker must not publish anything anymore.
+                            await conn.rollback()
+                            raise GuardRejected(
+                                f"the resume {resume_guard.resume_request_id} is no "
+                                f"longer owned by the lease {resume_guard.lease_token}"
+                            )
+                    if guard_statuses is not None:
+                        # The row is locked while the status is read, so a
+                        # concurrent cancel cannot slip in between the check
+                        # and the update.
+                        await cur.execute(
+                            """
+                            SELECT status FROM agent_execution_record
+                            WHERE invocation_id = %s FOR UPDATE
+                            """,
+                            (invocation_id,),
+                        )
+                        current = await cur.fetchone()
+                        if current is not None and current[0] not in guard_statuses:
+                            # The invocation already reached another terminal
+                            # state: the late result must not be published.
+                            await conn.rollback()
+                            raise GuardRejected(
+                                f"the invocation {invocation_id} is in the state "
+                                f"{current[0]}, not in {guard_statuses}"
+                            )
                     await cur.execute(
                         """
                         UPDATE agent_execution_record
@@ -815,7 +1096,8 @@ class PostgresExecutionRecordStore:
                 await cur.execute(
                     """
                     SELECT invocation_id, resume_request_id, thread_id, status, payload,
-                           checkpoint_id, created_at
+                           checkpoint_id, lease_token, lease_expire_at, takeover_count,
+                           created_at, updated_at
                     FROM agent_resume_record
                     WHERE invocation_id = %s AND resume_request_id = %s
                     """,
@@ -823,6 +1105,7 @@ class PostgresExecutionRecordStore:
                 )
                 row = await cur.fetchone()
         return _row_to_resume(row) if row else None
+
     async def create_resume(
         self,
         *,
@@ -832,6 +1115,7 @@ class PostgresExecutionRecordStore:
         status: str,
         payload: dict[str, Any] | None = None,
         checkpoint_id: str | None = None,
+        lease_expire_at: datetime | None = None,
     ) -> tuple[ResumeRecord, bool]:
         pool = self._require_pool()
         async with pool.connection() as conn:
@@ -839,11 +1123,13 @@ class PostgresExecutionRecordStore:
                 await cur.execute(
                     """
                     INSERT INTO agent_resume_record
-                        (invocation_id, resume_request_id, thread_id, status, payload, checkpoint_id)
-                    VALUES (%s, %s, %s, %s, %s::jsonb, %s)
+                        (invocation_id, resume_request_id, thread_id, status, payload,
+                         checkpoint_id, lease_token, lease_expire_at)
+                    VALUES (%s, %s, %s, %s, %s::jsonb, %s, 1, %s)
                     ON CONFLICT (invocation_id, resume_request_id) DO NOTHING
                     RETURNING invocation_id, resume_request_id, thread_id, status, payload,
-                              checkpoint_id, created_at
+                              checkpoint_id, lease_token, lease_expire_at, takeover_count,
+                              created_at, updated_at
                     """,
                     (
                         invocation_id,
@@ -852,6 +1138,7 @@ class PostgresExecutionRecordStore:
                         status,
                         _json(payload or {}),
                         checkpoint_id,
+                        lease_expire_at,
                     ),
                 )
                 row = await cur.fetchone()
@@ -861,7 +1148,8 @@ class PostgresExecutionRecordStore:
                         await cur2.execute(
                             """
                             SELECT invocation_id, resume_request_id, thread_id, status, payload,
-                                   checkpoint_id, created_at
+                                   checkpoint_id, lease_token, lease_expire_at, takeover_count,
+                                   created_at, updated_at
                             FROM agent_resume_record
                             WHERE invocation_id = %s AND resume_request_id = %s
                             """,
@@ -890,12 +1178,135 @@ class PostgresExecutionRecordStore:
                     UPDATE agent_resume_record
                     SET status = %s,
                         payload = COALESCE(%s::jsonb, payload),
-                        checkpoint_id = COALESCE(%s, checkpoint_id)
+                        checkpoint_id = COALESCE(%s, checkpoint_id),
+                        updated_at = now()
                     WHERE invocation_id = %s AND resume_request_id = %s
                     RETURNING invocation_id, resume_request_id, thread_id, status, payload,
-                              checkpoint_id, created_at
+                              checkpoint_id, lease_token, lease_expire_at, takeover_count,
+                              created_at, updated_at
                     """,
                     (status, _json(payload), checkpoint_id, invocation_id, resume_request_id),
+                )
+                row = await cur.fetchone()
+                await conn.commit()
+        return _row_to_resume(row) if row else None
+
+    async def claim_resume_lease(
+        self,
+        invocation_id: int,
+        resume_request_id: str,
+        *,
+        lease_expire_at: datetime,
+        expected_lease_token: int | None = None,
+    ) -> ResumeRecord | None:
+        """Take over the lease of a resume request whose owner died.
+
+        The update is conditional on the stored fencing token and on the
+        expiry of the previous lease: only one worker can win, and a worker
+        that is still alive keeps its lease.
+        """
+        pool = self._require_pool()
+        async with pool.connection() as conn:
+            async with conn.cursor() as cur:
+                await cur.execute(
+                    """
+                    UPDATE agent_resume_record
+                    SET lease_token = lease_token + 1,
+                        lease_expire_at = %s,
+                        takeover_count = takeover_count + 1,
+                        status = %s,
+                        updated_at = now()
+                    WHERE invocation_id = %s
+                      AND resume_request_id = %s
+                      AND status = ANY(%s)
+                      AND (%s::bigint IS NULL OR lease_token = %s::bigint)
+                      AND (lease_expire_at IS NULL OR lease_expire_at <= now())
+                    RETURNING invocation_id, resume_request_id, thread_id, status, payload,
+                              checkpoint_id, lease_token, lease_expire_at, takeover_count,
+                              created_at, updated_at
+                    """,
+                    (
+                        lease_expire_at,
+                        RESUME_CLAIMED,
+                        invocation_id,
+                        resume_request_id,
+                        list(RESUME_IN_FLIGHT),
+                        expected_lease_token,
+                        expected_lease_token,
+                    ),
+                )
+                row = await cur.fetchone()
+                await conn.commit()
+        return _row_to_resume(row) if row else None
+
+    async def renew_resume_lease(
+        self,
+        invocation_id: int,
+        resume_request_id: str,
+        *,
+        lease_token: int,
+        lease_expire_at: datetime,
+    ) -> bool:
+        pool = self._require_pool()
+        async with pool.connection() as conn:
+            async with conn.cursor() as cur:
+                await cur.execute(
+                    """
+                    UPDATE agent_resume_record
+                    SET lease_expire_at = %s, updated_at = now()
+                    WHERE invocation_id = %s
+                      AND resume_request_id = %s
+                      AND lease_token = %s
+                      AND status = ANY(%s)
+                    """,
+                    (
+                        lease_expire_at,
+                        invocation_id,
+                        resume_request_id,
+                        lease_token,
+                        list(RESUME_IN_FLIGHT),
+                    ),
+                )
+                renewed = cur.rowcount
+                await conn.commit()
+        return bool(renewed)
+
+    async def complete_resume(
+        self,
+        invocation_id: int,
+        resume_request_id: str,
+        *,
+        lease_token: int,
+        status: str,
+        payload: dict[str, Any] | None = None,
+        checkpoint_id: str | None = None,
+    ) -> ResumeRecord | None:
+        pool = self._require_pool()
+        async with pool.connection() as conn:
+            async with conn.cursor() as cur:
+                await cur.execute(
+                    """
+                    UPDATE agent_resume_record
+                    SET status = %s,
+                        payload = COALESCE(%s::jsonb, payload),
+                        checkpoint_id = COALESCE(%s, checkpoint_id),
+                        lease_expire_at = NULL,
+                        updated_at = now()
+                    WHERE invocation_id = %s
+                      AND resume_request_id = %s
+                      AND lease_token = %s
+                    RETURNING invocation_id, resume_request_id, thread_id, status, payload,
+                              checkpoint_id, lease_token, lease_expire_at, takeover_count,
+                              created_at, updated_at
+                    """,
+                    (
+                        status,
+                        _json(payload),
+                        checkpoint_id,
+                        invocation_id,
+                        resume_request_id,
+                        lease_token,
+                    ),
                 )
                 row = await cur.fetchone()
                 await conn.commit()
@@ -952,7 +1363,11 @@ def _row_to_resume(row: Any) -> ResumeRecord:
         status=row[3],
         payload=row[4] or {},
         checkpoint_id=row[5],
-        created_at=row[6],
+        lease_token=int(row[6] or 0),
+        lease_expire_at=row[7],
+        takeover_count=int(row[8] or 0),
+        created_at=row[9],
+        updated_at=row[10],
     )
 
 

@@ -38,6 +38,12 @@ COMMENT ON TABLE agent_execution_record IS
 -- One row per processed resume request. It keeps the terminal result of a
 -- resume so that a redelivered AgentResume can be answered with the recorded
 -- result instead of resuming the graph a second time.
+--
+-- The lease columns make the resume recoverable: a worker that dies while it
+-- continues the graph leaves the row in PROCESSING, and another worker may
+-- take it over once the lease expired. Without the lease the resume would be
+-- stuck forever, because the redelivered message would see PROCESSING and
+-- give up.
 CREATE TABLE IF NOT EXISTS agent_resume_record
 (
     id                BIGSERIAL PRIMARY KEY,
@@ -47,13 +53,35 @@ CREATE TABLE IF NOT EXISTS agent_resume_record
     status            TEXT        NOT NULL,
     payload           JSONB,
     checkpoint_id     TEXT,
+    -- The fencing token of the worker that currently continues the graph.
+    lease_token       BIGINT      NOT NULL DEFAULT 0,
+    -- The moment the lease of the current worker expires.
+    lease_expire_at   TIMESTAMPTZ,
+    -- How often the resume was taken over after a crashed worker.
+    takeover_count    INTEGER     NOT NULL DEFAULT 0,
     created_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
 
     CONSTRAINT uk_agent_resume_record UNIQUE (invocation_id, resume_request_id)
 );
 
+CREATE INDEX IF NOT EXISTS idx_agent_resume_record_lease
+    ON agent_resume_record (status, lease_expire_at);
+
+-- The lease columns were added after the first release: an existing database
+-- only gets them through these statements.
+ALTER TABLE agent_resume_record
+    ADD COLUMN IF NOT EXISTS lease_token BIGINT NOT NULL DEFAULT 0;
+ALTER TABLE agent_resume_record
+    ADD COLUMN IF NOT EXISTS lease_expire_at TIMESTAMPTZ;
+ALTER TABLE agent_resume_record
+    ADD COLUMN IF NOT EXISTS takeover_count INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE agent_resume_record
+    ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT now();
+
 COMMENT ON TABLE agent_resume_record IS
-    'Idempotency ledger of AgentResume messages: invocationId + resumeRequestId is unique.';
+    'Idempotency ledger of AgentResume messages: invocationId + resumeRequestId is unique. '
+    'The lease columns allow another worker to take over a resume whose worker died.';
 
 -- Transactional outbox of the agent service.
 --

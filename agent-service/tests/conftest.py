@@ -71,6 +71,18 @@ class FakeGitHubTool:
             }
         ]
 
+    async def list_closed_issues(self, ref: str, per_page: int = 10):
+        self.calls.append(f"list_closed_issues:{ref}")
+        return [
+            {
+                "number": 2,
+                "title": "closed issue",
+                "body": "This one is already closed.",
+                "state": "closed",
+                "comments": 1,
+            }
+        ]
+
     async def list_pull_requests(self, ref: str, state: str = "open", per_page: int = 10):
         self.calls.append(f"list_pull_requests:{ref}")
         return [{"number": 2, "title": "pr", "state": "open"}]

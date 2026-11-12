@@ -48,6 +48,7 @@ async def gather_node(state: AgentState, runtime: Runtime) -> dict[str, Any]:
         )
 
     tool_calls = int(state.get("toolCalls", 0))
+    await context.check_cancelled()
     tool_calls = context.consume_tool_call(tool_calls)
     dependency_report = await context.call_tool(
         lambda: analyze_dependencies(
@@ -84,7 +85,9 @@ async def analyze_node(state: AgentState, runtime: Runtime) -> dict[str, Any]:
     )
 
     messages = build_messages(TASK_DEPENDENCY_ANALYSIS, _ANALYSIS_INSTRUCTIONS, content)
+    await context.check_cancelled()
     result = await context.llm.ainvoke(messages)
+    await context.check_cancelled()
     analysis = result.as_json()
     context.counters.record_llm_call()
 

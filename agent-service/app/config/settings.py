@@ -92,6 +92,24 @@ class Settings(BaseSettings):
     default_max_tokens: int = 12000
     default_timeout_seconds: int = 300
 
+    # --- resume lease ----------------------------------------------------
+    # How long a worker may continue a paused thread before its lease
+    # expires. A worker that dies leaves the lease behind: the next delivery
+    # of the resume command takes it over and continues the same thread.
+    resume_lease_seconds: int = 30
+    # The grace period on top of the lease: how long a worker waits for the
+    # lease of a resume it does not own before it gives up (the owner is
+    # probably still working and renews the lease).
+    resume_lease_wait_seconds: int = 15
+    # How often the lease of a running resume is renewed and polled.
+    resume_lease_poll_seconds: float = 1.0
+    # How often a resume may be taken over before it is given up. The limit
+    # stops a resume that keeps killing its worker from looping forever.
+    resume_max_takeovers: int = 3
+    # How often the running invocation reads the store to find out whether it
+    # was cancelled (a cancel that another replica handled).
+    cancel_poll_seconds: float = 2.0
+
     # --- internal API --------------------------------------------------
     internal_api_token: str | None = Field(
         default=None,

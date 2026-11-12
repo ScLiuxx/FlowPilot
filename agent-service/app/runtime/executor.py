@@ -14,7 +14,9 @@ The executor owns
 from __future__ import annotations
 
 import asyncio
+import time
 from dataclasses import dataclass, field
+from datetime import datetime, timedelta, timezone
 from typing import Any, Callable
 
 from langgraph.types import Command
@@ -42,6 +44,8 @@ from app.messaging.events import (
 )
 from app.persistence.checkpoint import expected_thread_id, latest_checkpoint_id
 from app.persistence.repository import (
+    RESUME_CLAIMED,
+    RESUME_IN_FLIGHT,
     RESUME_PROCESSING,
     STATUS_CANCELLED,
     STATUS_FAILED,
@@ -49,10 +53,13 @@ from app.persistence.repository import (
     STATUS_RUNNING,
     STATUS_SUCCEEDED,
     ExecutionRecordStore,
+    GuardRejected,
     OutboxMessage,
+    ResumeGuard,
 )
 from app.runtime.context import AgentExecutionContext, ExecutionLimits, IdempotencyJournal, default_journal
 from app.runtime.errors import (
+    AgentCancelledError,
     AgentExecutionError,
     InternalError,
     InvocationTimeoutError,
@@ -71,6 +78,12 @@ OUTCOME_INTERRUPTED = "INTERRUPTED"
 OUTCOME_DUPLICATE = "DUPLICATE"
 OUTCOME_CANCELLED = "CANCELLED"
 
+#: The states an invocation may have while it is still being worked on. A
+#: terminal update (the success of a run, a cancel) is only applied while the
+#: invocation is in one of them — a cancelled invocation therefore never
+#: receives a late success event.
+LIVE_STATUSES = (STATUS_RUNNING, STATUS_INTERRUPTED)
+
 
 @dataclass
 class ExecutionOutcome:
@@ -83,6 +96,20 @@ class ExecutionOutcome:
     publish: bool = True
     error: ErrorPayload | None = None
     diagnostics: dict[str, Any] = field(default_factory=dict)
+    #: True when the outcome was discarded because the invocation had already
+    #: reached another terminal state (a cancel for example).
+    superseded: bool = False
+
+
+@dataclass
+class _CancelState:
+    """The cancellation state of one running invocation."""
+
+    #: Set when a cancel was requested for the invocation.
+    requested: bool = False
+    reason: str | None = None
+    #: The moment the store was read the last time.
+    last_poll: float = 0.0
 
 
 class AgentExecutor:
@@ -106,6 +133,11 @@ class AgentExecutor:
         self._llm_factory = llm_factory
         self._github_factory = github_factory
         self._journal = journal or default_journal()
+        # The asyncio task of every running invocation. The AgentCancel command
+        # uses it to stop the graph of a running invocation.
+        self._running: dict[int, asyncio.Task[Any]] = {}
+        # The cancellation state of every running invocation.
+        self._cancel_states: dict[int, _CancelState] = {}
 
     # -- collaborators ----------------------------------------------------
     def _build_llm(self) -> Any:
@@ -142,11 +174,17 @@ class AgentExecutor:
                 "agent.execute received",
                 extra={"agentType": payload.agentType, "attemptNo": envelope.attemptNo},
             )
+            self._cancel_states.setdefault(payload.invocationId, _CancelState())
             try:
                 self._validate_thread(payload.threadId, payload.invocationId)
                 return await self._execute(envelope, payload)
             except AgentExecutionError as exc:
                 return await self._fail(payload, exc, envelope)
+            except asyncio.CancelledError:
+                # The worker is shutting down: the invocation must not stay in
+                # the running state forever, the Java backend retries it.
+                await self._abandon(payload.invocationId)
+                raise
             except Exception as exc:  # pragma: no cover - defensive
                 logger.exception("unexpected failure during agent execution")
                 return await self._fail(
@@ -157,6 +195,8 @@ class AgentExecutor:
                     ),
                     envelope,
                 )
+            finally:
+                self._cancel_states.pop(payload.invocationId, None)
 
     async def resume(
         self, envelope: MessageEnvelope, payload: AgentResumePayload
@@ -172,6 +212,7 @@ class AgentExecutor:
                 "agent.resume received",
                 extra={"resumeRequestId": payload.resumeRequestId},
             )
+            self._cancel_states.setdefault(payload.invocationId, _CancelState())
             try:
                 self._validate_thread(payload.threadId, payload.invocationId)
                 return await self._resume(envelope, payload)
@@ -185,6 +226,9 @@ class AgentExecutor:
                     exc,
                     envelope,
                 )
+            except asyncio.CancelledError:
+                await self._abandon(payload.invocationId)
+                raise
             except Exception as exc:  # pragma: no cover - defensive
                 logger.exception("unexpected failure during agent resume")
                 return await self._fail(
@@ -199,11 +243,20 @@ class AgentExecutor:
                     ),
                     envelope,
                 )
+            finally:
+                self._cancel_states.pop(payload.invocationId, None)
 
     async def cancel(
         self, envelope: MessageEnvelope, payload: AgentCancelPayload
     ) -> ExecutionOutcome:
-        """Handle an ``AgentCancel`` message (cooperative cancellation)."""
+        """Handle an ``AgentCancel`` message (cooperative cancellation).
+
+        The cancel is a *request*: the running graph is stopped where it can be
+        stopped, the side effects it already caused are of course not undone.
+        The terminal state is written first and conditionally — a success that
+        is already on its way therefore wins the race, and a cancelled
+        invocation never receives a late success event.
+        """
         with log_context(
             trace_id=envelope.traceId,
             invocation_id=payload.invocationId,
@@ -224,8 +277,7 @@ class AgentExecutor:
                 errorMessage=payload.cancelReason or "agent invocation canceled",
                 retryable=False,
             )
-            logger.info("agent.cancel applied", extra={"reason": payload.cancelReason})
-            return await self._persist_outcome(
+            outcome = await self._persist_outcome(
                 envelope,
                 invocation_id=payload.invocationId,
                 status=STATUS_CANCELLED,
@@ -233,7 +285,24 @@ class AgentExecutor:
                 message_type=MessageType.AGENT_FAILED,
                 payload=dump_payload(failed),
                 error=dump_payload(failed),
+                guard_statuses=LIVE_STATUSES,
             )
+            # The state is durable now — the running graph is stopped.
+            state = self._cancel_states.setdefault(payload.invocationId, _CancelState())
+            state.requested = True
+            state.reason = payload.cancelReason
+            task = self._running.get(payload.invocationId)
+            if task is not None:
+                task.cancel()
+            logger.info(
+                "agent.cancel applied",
+                extra={
+                    "reason": payload.cancelReason,
+                    "superseded": outcome.superseded,
+                    "stoppedRunningGraph": task is not None,
+                },
+            )
+            return outcome
 
     # -- internals --------------------------------------------------------
     @staticmethod
@@ -245,6 +314,31 @@ class AgentExecutor:
                 error_code="AG-THREAD-ID-001",
                 diagnostics={"threadId": thread_id, "expected": expected},
             )
+
+    def _cancel_requested(self, invocation_id: int) -> bool:
+        """Whether a cancel was requested for the invocation."""
+        state = self._cancel_states.get(invocation_id)
+        return bool(state and state.requested)
+
+    async def _abandon(self, invocation_id: int) -> None:
+        """Mark an invocation as failed when the worker stops in the middle of it.
+
+        Without it the invocation would stay in the running state and the Java
+        backend would wait for a result that never arrives.
+        """
+        try:
+            await self._store.update(
+                invocation_id,
+                status=STATUS_FAILED,
+                error={
+                    "errorCode": "AG-WORKER-LOST-001",
+                    "errorCategory": ErrorCategory.TRANSIENT.value,
+                    "errorMessage": "the agent worker stopped while the invocation was running",
+                    "retryable": True,
+                },
+            )
+        except Exception:  # pragma: no cover - best effort during shutdown
+            logger.exception("could not mark the abandoned invocation as failed")
 
     async def _execute(
         self, envelope: MessageEnvelope, payload: AgentExecutePayload
@@ -295,24 +389,41 @@ class AgentExecutor:
         self, envelope: MessageEnvelope, payload: AgentResumePayload
     ) -> ExecutionOutcome:
         invocation_id = payload.invocationId
+        resume_request_id = payload.resumeRequestId
 
-        # The resume request is claimed *before* the graph is continued, so two
-        # redeliveries of the same AgentResume can never resume the thread
-        # twice (the unique constraint of the ledger makes the claim atomic).
-        resume_record, claimed = await self._store.create_resume(
+        # The resume request is claimed *before* the graph is continued: the
+        # unique constraint of the ledger makes the claim atomic, and the lease
+        # of the ledger says who is allowed to continue the thread.
+        record, created = await self._store.create_resume(
             invocation_id=invocation_id,
-            resume_request_id=payload.resumeRequestId,
+            resume_request_id=resume_request_id,
             thread_id=payload.threadId,
-            status=RESUME_PROCESSING,
+            status=RESUME_CLAIMED,
             payload={},
+            lease_expire_at=_utcnow()
+            + timedelta(seconds=self._settings.resume_lease_seconds),
         )
-        if not claimed:
-            logger.info(
-                "agent.resume ignored (resume request already processed)",
-                extra={"resumeRequestId": payload.resumeRequestId, "duplicate": True},
-            )
-            if resume_record.status == RESUME_PROCESSING:
-                # The first delivery is still running: do not publish anything.
+        lease_token = record.lease_token
+        takeover = False
+
+        if not created:
+            if record.status not in RESUME_IN_FLIGHT:
+                # The resume was already completed: the recorded result is
+                # published again so the backend learns about it.
+                logger.info(
+                    "agent.resume replayed (already completed)",
+                    extra={"resumeRequestId": resume_request_id, "duplicate": True},
+                )
+                return await self._replay_resume(envelope, invocation_id, record)
+            # The resume is in flight. It is either a redelivery of a message
+            # that is being processed right now, or the remains of a worker
+            # that died. The lease tells the two apart.
+            lease = await self._take_over_resume(invocation_id, resume_request_id, record)
+            if lease is None:
+                logger.info(
+                    "agent.resume ignored (another worker owns the resume)",
+                    extra={"resumeRequestId": resume_request_id, "duplicate": True},
+                )
                 return ExecutionOutcome(
                     status=RESUME_PROCESSING,
                     message_type=MessageType.AGENT_FAILED,
@@ -320,19 +431,15 @@ class AgentExecutor:
                     duplicate=True,
                     publish=False,
                 )
-            record = await self._store.get(invocation_id)
-            return await self._persist_outcome(
-                envelope,
-                invocation_id=invocation_id,
-                status=record.status if record is not None else STATUS_SUCCEEDED,
-                outcome_status=resume_record.status,
-                message_type=MessageType(resume_record.payload["messageType"])
-                if resume_record.payload.get("messageType")
-                else MessageType.AGENT_COMPLETED,
-                payload=resume_record.payload.get("payload") or {},
-                duplicate=True,
-            )
+            record = lease
+            lease_token = lease.lease_token
+            takeover = True
+            takeover_count = lease.takeover_count
 
+        lease = (resume_request_id, lease_token)
+        renewer = asyncio.create_task(
+            self._renew_resume_lease(invocation_id, resume_request_id, lease_token)
+        )
         try:
             record = await self._store.get(invocation_id)
             if record is None:
@@ -352,9 +459,10 @@ class AgentExecutor:
             if record.status == STATUS_SUCCEEDED:
                 duplicate = await self._duplicate_outcome(record, envelope)
                 if duplicate is not None:
-                    await self._store.update_resume(
+                    await self._store.complete_resume(
                         invocation_id,
-                        payload.resumeRequestId,
+                        resume_request_id,
+                        lease_token=lease_token,
                         status=duplicate.status,
                         payload={
                             "messageType": duplicate.message_type.value,
@@ -377,33 +485,172 @@ class AgentExecutor:
                 payload.threadId,
                 Command(resume=payload.resumeValue or {}),
             )
-            outcome = await self._finalize(envelope, payload, context, state)
-        except BaseException as exc:
-            # The resume request failed: release the claim with the failure so
-            # that a redelivery returns the recorded error instead of resuming
-            # the thread a second time.
-            await self._store.update_resume(
-                invocation_id,
-                payload.resumeRequestId,
-                status=STATUS_FAILED,
-                payload={},
+            outcome = await self._finalize(
+                envelope, payload, context, state, resume_lease=lease
             )
-            raise exc
+        except asyncio.CancelledError:
+            # The worker is stopping: the lease is left to expire, so that
+            # another worker can take the resume over.
+            raise
+        except AgentExecutionError as exc:
+            # The failure event and the ledger are written in one transaction,
+            # therefore a redelivery of the resume returns the recorded error
+            # instead of resuming the thread a second time.
+            return await self._fail(
+                AgentExecutePayload(
+                    agentType="",
+                    threadId=payload.threadId,
+                    invocationId=invocation_id,
+                ),
+                exc,
+                envelope,
+                resume_lease=lease,
+            )
+        finally:
+            renewer.cancel()
 
-        await self._store.update_resume(
-            invocation_id,
-            payload.resumeRequestId,
-            status=outcome.status,
-            payload={
-                "messageType": outcome.message_type.value,
-                "payload": outcome.payload,
-            },
-            checkpoint_id=outcome.payload.get("checkpointId"),
-        )
         await self._store.update(
-            invocation_id, resume_request_id=payload.resumeRequestId
+            invocation_id, resume_request_id=resume_request_id
         )
+        if takeover:
+            logger.info(
+                "the resume was taken over by another worker",
+                extra={
+                    "resumeRequestId": resume_request_id,
+                    "leaseToken": lease_token,
+                    "takeoverCount": takeover_count,
+                },
+            )
         return outcome
+
+    async def _replay_resume(
+        self, envelope: MessageEnvelope, invocation_id: int, record: Any
+    ) -> ExecutionOutcome:
+        """Publish the recorded result of an already completed resume."""
+        invocation = await self._store.get(invocation_id)
+        return await self._persist_outcome(
+            envelope,
+            invocation_id=invocation_id,
+            status=invocation.status if invocation is not None else STATUS_SUCCEEDED,
+            outcome_status=record.status,
+            message_type=MessageType(record.payload["messageType"])
+            if record.payload.get("messageType")
+            else MessageType.AGENT_COMPLETED,
+            payload=record.payload.get("payload") or {},
+            duplicate=True,
+        )
+
+    async def _take_over_resume(
+        self, invocation_id: int, resume_request_id: str, record: Any
+    ) -> Any:
+        """Wait for the lease of a running resume to expire and take it over.
+
+        The takeover is the reason a resume cannot get stuck forever: a worker
+        that dies while it continues the graph leaves the ledger in the
+        ``CLAIMED`` state with an expired lease. The next delivery of the
+        resume command — the broker redelivers it, because the dead worker
+        never acknowledged it — finds the expired lease and continues the very
+        same thread and checkpoint.
+
+        The lease is the fence: only one worker can take it over, and the
+        worker that lost it must not write the result anymore.
+        """
+        # The wait covers the remaining lifetime of the lease, so the takeover
+        # is always possible. The additional grace period covers the moment
+        # between the expiry and the next poll.
+        deadline = time.monotonic() + (
+            self._settings.resume_lease_seconds + self._settings.resume_lease_wait_seconds
+        )
+        while True:
+            current = await self._store.get_resume(invocation_id, resume_request_id)
+            if current is None or current.status not in RESUME_IN_FLIGHT:
+                # The owner finished the resume in the meantime.
+                return None
+            if current.takeover_count >= self._settings.resume_max_takeovers:
+                logger.error(
+                    "the resume was taken over too often, giving up",
+                    extra={
+                        "resumeRequestId": resume_request_id,
+                        "takeoverCount": current.takeover_count,
+                    },
+                )
+                raise ValidationError(
+                    "the resume was taken over too often, the worker keeps dying",
+                    error_code="AG-RESUME-TOKEOVER-LIMIT-001",
+                    category=ErrorCategory.TRANSIENT,
+                    retryable=True,
+                    diagnostics={"takeoverCount": current.takeover_count},
+                )
+            now = _utcnow()
+            if current.lease_expire_at is None or current.lease_expire_at <= now:
+                claimed = await self._store.claim_resume_lease(
+                    invocation_id,
+                    resume_request_id,
+                    lease_expire_at=now
+                    + timedelta(seconds=self._settings.resume_lease_seconds),
+                    expected_lease_token=current.lease_token,
+                )
+                if claimed is not None:
+                    logger.warning(
+                        "the resume lease expired, the resume is taken over",
+                        extra={
+                            "resumeRequestId": resume_request_id,
+                            "previousLeaseToken": current.lease_token,
+                            "leaseToken": claimed.lease_token,
+                            "takeoverCount": claimed.takeover_count,
+                        },
+                    )
+                    return claimed
+                # Somebody else took the lease over first.
+                continue
+            if time.monotonic() >= deadline:
+                logger.warning(
+                    "the resume is still owned by another worker",
+                    extra={
+                        "resumeRequestId": resume_request_id,
+                        "leaseToken": current.lease_token,
+                    },
+                )
+                return None
+            await asyncio.sleep(self._settings.resume_lease_poll_seconds)
+
+    async def _renew_resume_lease(
+        self, invocation_id: int, resume_request_id: str, lease_token: int
+    ) -> None:
+        """Keep the lease of a running resume alive.
+
+        The lease is renewed while the graph is continued. When the renewal
+        fails the lease was taken over by another worker — this worker must
+        stop, otherwise two workers would continue the same thread.
+        """
+        interval = max(1.0, self._settings.resume_lease_seconds / 3)
+        while True:
+            await asyncio.sleep(interval)
+            try:
+                renewed = await self._store.renew_resume_lease(
+                    invocation_id,
+                    resume_request_id,
+                    lease_token=lease_token,
+                    lease_expire_at=_utcnow()
+                    + timedelta(seconds=self._settings.resume_lease_seconds),
+                )
+            except asyncio.CancelledError:
+                raise
+            except Exception:  # pragma: no cover - defensive
+                logger.exception("the resume lease could not be renewed")
+                continue
+            if not renewed:
+                logger.error(
+                    "the resume lease was lost, the worker stops",
+                    extra={
+                        "resumeRequestId": resume_request_id,
+                        "leaseToken": lease_token,
+                    },
+                )
+                task = self._running.get(invocation_id)
+                if task is not None:
+                    task.cancel()
+                return
 
     def _build_context(
         self,
@@ -435,7 +682,36 @@ class AgentExecutor:
             node_execution_id=envelope.nodeExecutionId,
             attempt_no=envelope.attemptNo,
             correlation_id=envelope.correlationId,
+            cancel_probe=lambda: self._cancel_probe(payload.invocationId),
         )
+
+    async def _cancel_probe(self, invocation_id: int) -> bool:
+        """Whether the invocation was cancelled.
+
+        The in-process flag answers immediately. The store is only read every
+        few seconds — a cancel that was handled by another replica is noticed
+        with that delay, which is good enough: the node is stopped at the next
+        check anyway.
+        """
+        if self._cancel_requested(invocation_id):
+            return True
+        state = self._cancel_states.get(invocation_id)
+        now = time.monotonic()
+        if state is not None and now - state.last_poll < self._settings.cancel_poll_seconds:
+            return False
+        if state is not None:
+            state.last_poll = now
+        try:
+            record = await self._store.get(invocation_id)
+        except Exception:  # pragma: no cover - the store is temporarily down
+            logger.exception("the cancel probe could not read the execution record")
+            return False
+        if record is not None and record.status == STATUS_CANCELLED:
+            if state is not None:
+                state.requested = True
+                state.reason = "the invocation was cancelled"
+            return True
+        return False
 
     async def _run_graph(
         self,
@@ -462,9 +738,15 @@ class AgentExecutor:
                 "flowpilot.thread_id": context.thread_id,
             },
         ) as span:
+            # The graph runs in its own task: the AgentCancel command can then
+            # stop it, even while it waits for the model or for a tool.
+            task = asyncio.create_task(
+                graph.ainvoke(graph_input, config, context=context)
+            )
+            self._running[context.invocation_id] = task
             try:
                 result = await asyncio.wait_for(
-                    graph.ainvoke(graph_input, config, context=context),
+                    task,
                     timeout=context.limits.timeout_seconds,
                 )
             except asyncio.TimeoutError as exc:
@@ -477,10 +759,21 @@ class AgentExecutor:
                         "invocationId": context.invocation_id,
                     },
                 ) from exc
+            except asyncio.CancelledError:
+                span.set_status(Status(StatusCode.ERROR, "cancelled"))
+                if self._cancel_requested(context.invocation_id):
+                    # The invocation was cancelled on purpose: this is a
+                    # business outcome, not a defect of the worker.
+                    raise AgentCancelledError(
+                        "the agent invocation was cancelled while it was running"
+                    ) from None
+                raise
             except Exception as exc:
                 span.record_exception(exc)
                 span.set_status(Status(StatusCode.ERROR, type(exc).__name__))
                 raise
+            finally:
+                self._running.pop(context.invocation_id, None)
         return result  # type: ignore[return-value]
 
     async def _finalize(
@@ -489,6 +782,7 @@ class AgentExecutor:
         payload: Any,
         context: AgentExecutionContext,
         state: AgentState,
+        resume_lease: tuple[str, int] | None = None,
     ) -> ExecutionOutcome:
         invocation_id = payload.invocationId
         thread_id = payload.threadId
@@ -497,7 +791,7 @@ class AgentExecutor:
 
         if interrupts:
             return await self._interrupt(
-                envelope, invocation_id, thread_id, checkpoint_id, interrupts
+                envelope, invocation_id, thread_id, checkpoint_id, interrupts, resume_lease
             )
 
         usage = {
@@ -536,6 +830,14 @@ class AgentExecutor:
             checkpoint_id=checkpoint_id,
             result=dump_payload(completed),
             usage=usage,
+            guard_statuses=LIVE_STATUSES,
+            resume_guard=self._resume_guard(
+                resume_lease,
+                status=OUTCOME_COMPLETED,
+                message_type=MessageType.AGENT_COMPLETED,
+                payload=dump_payload(completed),
+                checkpoint_id=checkpoint_id,
+            ),
         )
 
     async def _interrupt(
@@ -545,6 +847,7 @@ class AgentExecutor:
         thread_id: str,
         checkpoint_id: str | None,
         interrupts: Any,
+        resume_lease: tuple[str, int] | None = None,
     ) -> ExecutionOutcome:
         first = interrupts[0] if isinstance(interrupts, (list, tuple)) else interrupts
         value = getattr(first, "value", None)
@@ -571,6 +874,38 @@ class AgentExecutor:
             message_type=MessageType.AGENT_INTERRUPTED,
             payload=dump_payload(interrupted),
             checkpoint_id=checkpoint_id,
+            guard_statuses=LIVE_STATUSES,
+            resume_guard=self._resume_guard(
+                resume_lease,
+                status=OUTCOME_INTERRUPTED,
+                message_type=MessageType.AGENT_INTERRUPTED,
+                payload=dump_payload(interrupted),
+                checkpoint_id=checkpoint_id,
+            ),
+        )
+
+    @staticmethod
+    def _resume_guard(
+        lease: tuple[str, int] | None,
+        *,
+        status: str,
+        message_type: MessageType,
+        payload: dict[str, Any],
+        checkpoint_id: str | None,
+    ) -> ResumeGuard | None:
+        """Build the fence of a resume request, if the run belongs to one."""
+        if lease is None:
+            return None
+        resume_request_id, lease_token = lease
+        return ResumeGuard(
+            resume_request_id=resume_request_id,
+            lease_token=lease_token,
+            status=status,
+            payload={
+                "messageType": message_type.value,
+                "payload": payload,
+            },
+            checkpoint_id=checkpoint_id,
         )
 
     async def _fail(
@@ -578,6 +913,7 @@ class AgentExecutor:
         payload: Any,
         error: AgentExecutionError,
         envelope: MessageEnvelope,
+        resume_lease: tuple[str, int] | None = None,
     ) -> ExecutionOutcome:
         invocation_id = getattr(payload, "invocationId", None) or envelope.invocationId or 0
         thread_id = getattr(payload, "threadId", "") or expected_thread_id(invocation_id)
@@ -610,6 +946,14 @@ class AgentExecutor:
                 payload=dump_payload(failed),
                 error=dump_payload(failed),
                 error_payload=error_payload,
+                guard_statuses=LIVE_STATUSES,
+                resume_guard=self._resume_guard(
+                    resume_lease,
+                    status=STATUS_FAILED,
+                    message_type=MessageType.AGENT_FAILED,
+                    payload=dump_payload(failed),
+                    checkpoint_id=None,
+                ),
             )
         except Exception:
             # The failure could not be persisted: the command has to be retried,
@@ -632,12 +976,23 @@ class AgentExecutor:
         usage: dict[str, Any] | None = None,
         error_payload: ErrorPayload | None = None,
         duplicate: bool = False,
+        guard_statuses: tuple[str, ...] | None = None,
+        resume_guard: ResumeGuard | None = None,
     ) -> ExecutionOutcome:
         """Persist the outcome and enqueue its event in one transaction.
 
         The event is not published directly: it is written to the transactional
         outbox together with the execution record, therefore the result can
         never be lost when the service dies right after the execution.
+
+        ``guard_statuses`` makes the write conditional: when the invocation
+        already reached another terminal state (a cancel for example), the
+        outcome is discarded and no event is enqueued. The backend therefore
+        never sees a success after a cancel.
+
+        ``resume_guard`` closes the resume ledger in the same transaction and
+        only while the lease of the resume request is still owned by this
+        worker — a worker whose lease was taken over publishes nothing.
         """
         event = build_outcome_envelope(envelope, message_type, payload)
         outbox = OutboxMessage(
@@ -646,15 +1001,37 @@ class AgentExecutor:
             routing_key=ROUTING_BY_MESSAGE_TYPE.get(message_type, message_type.value),
             payload=envelope_to_dict(event),
         )
-        await self._store.update_with_outcome(
-            invocation_id,
-            status=status,
-            checkpoint_id=checkpoint_id,
-            result=result,
-            error=error,
-            usage=usage,
-            outbox=outbox,
-        )
+        try:
+            await self._store.update_with_outcome(
+                invocation_id,
+                status=status,
+                checkpoint_id=checkpoint_id,
+                result=result,
+                error=error,
+                usage=usage,
+                outbox=outbox,
+                guard_statuses=guard_statuses,
+                resume_guard=resume_guard,
+            )
+        except GuardRejected as exc:
+            logger.info(
+                "the outcome was discarded, the invocation already reached "
+                "another terminal state",
+                extra={
+                    "invocationId": invocation_id,
+                    "status": status,
+                    "reason": str(exc),
+                },
+            )
+            return ExecutionOutcome(
+                status=outcome_status,
+                message_type=message_type,
+                payload=payload,
+                duplicate=True,
+                publish=False,
+                error=error_payload,
+                superseded=True,
+            )
         return ExecutionOutcome(
             status=outcome_status,
             message_type=message_type,
@@ -749,3 +1126,8 @@ def _counter(state: AgentState, key: str, fallback: int) -> int:
     """
     value = int(state.get(key, 0) or 0)
     return value or fallback
+
+
+def _utcnow() -> datetime:
+    """The current time in UTC (the leases are compared against it)."""
+    return datetime.now(tz=timezone.utc)
