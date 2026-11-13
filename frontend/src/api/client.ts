@@ -231,6 +231,12 @@ export const executionApi = {
       url: `/executions/${executionId}/cancel`,
       method: 'POST',
       data: payload
+    }),
+  /** 生成执行的技术尽调报告；重复调用返回已有的报告 */
+  generateReport: (executionId: Id) =>
+    request<{ reportId: Id; reportNo: string; status: string; title: string }>({
+      url: `/executions/${executionId}/report`,
+      method: 'POST'
     })
 }
 

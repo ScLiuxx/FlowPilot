@@ -48,6 +48,9 @@ export interface SseClientOptions {
  * 原生 `EventSource` 只会把 `event:` 行声明的类型派发给同名监听器，
  * 因此这里必须枚举后端会发出的全部事件类型；新增后端事件时在此追加即可。
  * 未声明 `event:` 的消息由默认的 `message` 监听器兜底。
+ *
+ * 注意：漏登记的事件类型会被浏览器静默丢弃，既不会进入时间线，也不会触发
+ * 页面的刷新，因此这份清单必须与后端的 `EventType` 枚举保持一致。
  */
 const DEFAULT_EVENT_TYPES = [
   // 工作流级
@@ -72,11 +75,14 @@ const DEFAULT_EVENT_TYPES = [
   // Agent 级
   'AGENT_STARTED',
   'AGENT_INTERRUPTED',
+  'AGENT_RESUMED',
   'AGENT_COMPLETED',
   'AGENT_FAILED',
   'AGENT_RETRY',
   // 审批 / 报告
+  'APPROVAL_REQUESTED',
   'APPROVAL_SUBMITTED',
+  'APPROVAL_EXPIRED',
   'APPROVAL_DECIDED',
   'REPORT_GENERATED',
   'REPORT_CREATED',
