@@ -2,8 +2,8 @@
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { ArrowLeft, CircleClose, Refresh, VideoPause } from '@element-plus/icons-vue'
-import { approvalApi, getExecutionTrace } from '@/api/client'
+import { ArrowLeft, CircleClose, Document, Refresh, VideoPause } from '@element-plus/icons-vue'
+import { approvalApi, executionApi, getExecutionTrace } from '@/api/client'
 import type { Approval, ApprovalDecision, Id, JsonObject, TraceResponse, TraceSpan } from '@/api/types'
 import { useAuthStore } from '@/stores/auth'
 import { useExecutionStore } from '@/stores/executions'
@@ -30,6 +30,7 @@ const executionId = computed(() => String(route.params.id))
 const loading = ref(true)
 const error = ref('')
 const cancelling = ref(false)
+const generatingReport = ref(false)
 const approvals = ref<Approval[]>([])
 
 /* 链路追踪 */
@@ -53,6 +54,9 @@ const isTerminal = computed(() =>
 const canCancel = computed(
   () => !!execution.value && !isTerminal.value && execution.value.status !== 'CANCELED'
 )
+
+/** 报告只能由成功的执行生成 */
+const canGenerateReport = computed(() => execution.value?.status === 'SUCCEEDED')
 
 const relatedApprovals = computed(() =>
   approvals.value.filter((item) => item.workflowExecutionId === executionId.value)
@@ -201,6 +205,24 @@ async function loadApprovals(): Promise<void> {
   }
 }
 
+/**
+ * 审批相关的事件到达后重新拉取待审批列表。
+ *
+ * 审批是在工作流运行中产生的，页面打开时往往还没有，因此只加载一次的话，
+ * 待审批卡片不会出现，用户只能手动刷新页面才能看到。
+ */
+const APPROVAL_EVENT_TYPES = ['APPROVAL_REQUESTED', 'APPROVAL_SUBMITTED', 'APPROVAL_EXPIRED']
+
+watch(
+  () => store.events.length,
+  () => {
+    const last = store.events[store.events.length - 1]
+    if (last && APPROVAL_EVENT_TYPES.includes(last.eventType)) {
+      void loadApprovals()
+    }
+  }
+)
+
 /** 根据执行状态建立或断开 SSE */
 function syncStream(): void {
   if (isTerminal.value) {
@@ -267,6 +289,20 @@ async function decide(approval: Approval, decision: ApprovalDecision): Promise<v
   }
 }
 
+/** 生成技术尽调报告，并跳转到报告详情 */
+async function generateReport(): Promise<void> {
+  generatingReport.value = true
+  try {
+    const result = await executionApi.generateReport(executionId.value)
+    ElMessage.success(`报告 ${result.reportNo} 已生成`)
+    await router.push({ name: 'report-detail', params: { id: String(result.reportId) } })
+  } catch {
+    // 错误提示由 api 拦截器统一处理
+  } finally {
+    generatingReport.value = false
+  }
+}
+
 watch(
   () => execution.value?.status,
   () => {
@@ -317,6 +353,16 @@ onBeforeUnmount(() => {
           @click="cancelExecution"
         >
           取消执行
+        </el-button>
+        <el-button
+          v-if="canGenerateReport"
+          type="primary"
+          plain
+          :icon="Document"
+          :loading="generatingReport"
+          @click="generateReport"
+        >
+          生成报告
         </el-button>
       </PageHeader>
 

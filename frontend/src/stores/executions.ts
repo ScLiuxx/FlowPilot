@@ -15,6 +15,7 @@ export const useExecutionStore = defineStore('executions', () => {
 
   let client: SseClient | null = null
   let connectedExecutionId: Id | null = null
+  let refreshTimer: ReturnType<typeof setTimeout> | null = null
 
   const isStreaming = computed(() => streamStatus.value === 'open')
   const isReconnecting = computed(
@@ -29,6 +30,34 @@ export const useExecutionStore = defineStore('executions', () => {
     events.value = []
     error.value = ''
     streamStatus.value = 'idle'
+  }
+
+  /**
+   * 事件到达后重新拉取执行概览与节点列表。
+   *
+   * 事件流本身只带事件，节点的状态在节点表里，因此没有这一步，页面就会一直显示
+   * 打开时的快照，而顶部的「实时事件流已连接」却在闪。
+   */
+  async function refreshSnapshot(executionId: Id): Promise<void> {
+    try {
+      current.value = await executionApi.detail(executionId)
+    } catch {
+      // 保留旧数据，错误提示由首次加载负责
+    }
+    try {
+      nodes.value = await executionApi.nodes(executionId)
+    } catch {
+      // 同上
+    }
+  }
+
+  /** 连续的事件合并成一次重新拉取，避免事件密集时把接口打满 */
+  function scheduleRefresh(executionId: Id): void {
+    if (refreshTimer !== null) clearTimeout(refreshTimer)
+    refreshTimer = setTimeout(() => {
+      refreshTimer = null
+      void refreshSnapshot(executionId)
+    }, 400)
   }
 
   async function loadDetail(executionId: Id): Promise<Execution | null> {
@@ -107,6 +136,7 @@ export const useExecutionStore = defineStore('executions', () => {
       onEvent: (raw) => {
         const normalized = toExecutionEvent(raw)
         if (normalized) appendEvent(normalized)
+        scheduleRefresh(executionId)
       },
       onStatus: (status) => {
         streamStatus.value = status
@@ -123,6 +153,10 @@ export const useExecutionStore = defineStore('executions', () => {
     client?.close()
     client = null
     connectedExecutionId = null
+    if (refreshTimer !== null) {
+      clearTimeout(refreshTimer)
+      refreshTimer = null
+    }
     if (streamStatus.value !== 'closed') {
       streamStatus.value = 'idle'
     }
