@@ -11,11 +11,13 @@ RUN apt-get update \
  && apt-get install -y --no-install-recommends build-essential curl \
  && rm -rf /var/lib/apt/lists/*
 
-COPY requirements.txt .
+# The context of the build is the root of the repository, because the shared
+# protocol files live next to the service.
+COPY agent-service/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt \
  && apt-get purge -y build-essential && apt-get autoremove -y
 
-COPY app ./app
+COPY agent-service/app ./app
 # The shared protocol files are needed at runtime, the service validates its messages against them.
 COPY flowpilot-protocol /app/flowpilot-protocol
 

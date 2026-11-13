@@ -105,6 +105,11 @@ services:
       RABBITMQ_HOST: rabbitmq
       JWT_SECRET: ${JWT_SECRET:-flowpilot-development-secret-key-change-me-in-production-000}
       WORKER_ID: api-01
+      # The token raises the rate limit of the GitHub API.
+      GITHUB_TOKEN: ${GITHUB_TOKEN:-}
+      # The agent service is reached under the name of its service in the network
+      # of the project, not under the loopback address of the container.
+      AGENT_SERVICE_URL: http://agent-worker:8000
       # The secret of the internal endpoints of the agent service.
       AGENT_INTERNAL_TOKEN: ${AGENT_INTERNAL_TOKEN:-flowpilot-internal-token-change-me-in-production}
     ports:
@@ -130,11 +135,16 @@ services:
       REDIS_HOST: redis
       RABBITMQ_HOST: rabbitmq
       JWT_SECRET: ${JWT_SECRET:-flowpilot-development-secret-key-change-me-in-production-000}
+      # The token raises the rate limit of the GitHub API.
+      GITHUB_TOKEN: ${GITHUB_TOKEN:-}
       # The identity of the worker has to be unique per replica, otherwise the
       # logs and the metrics of the replicas cannot be told apart. Nothing is
       # configured here on purpose: the backend falls back to the hostname of
       # the container, which Docker sets to the unique container id. Set
       # WORKER_ID to pin the identity of a single replica.
+      # The agent service is reached under the name of its service in the network
+      # of the project, not under the loopback address of the container.
+      AGENT_SERVICE_URL: http://agent-worker:8000
       # The secret of the internal endpoints of the agent service.
       AGENT_INTERNAL_TOKEN: ${AGENT_INTERNAL_TOKEN:-flowpilot-internal-token-change-me-in-production}
     depends_on:
@@ -155,15 +165,10 @@ services:
     # No container_name here either: the agent worker can be scaled as well,
     # and the container names would collide.
     environment:
-      RABBITMQ_HOST: rabbitmq
-      RABBITMQ_PORT: 5672
-      RABBITMQ_USERNAME: ${RABBITMQ_USERNAME:-flowpilot}
-      RABBITMQ_PASSWORD: ${RABBITMQ_PASSWORD:-flowpilot}
-      POSTGRES_HOST: postgres
-      POSTGRES_PORT: 5432
-      POSTGRES_USER: ${POSTGRES_USER:-flowpilot}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-flowpilot}
-      POSTGRES_DB: ${POSTGRES_DATABASE:-flowpilot_agent}
+      # The service reads the broker and the database from the url, not from
+      # single variables.
+      RABBITMQ_URL: amqp://${RABBITMQ_USERNAME:-flowpilot}:${RABBITMQ_PASSWORD:-flowpilot}@rabbitmq:5672/
+      POSTGRES_DSN: postgresql://${POSTGRES_USER:-flowpilot}:${POSTGRES_PASSWORD:-flowpilot}@postgres:5432/${POSTGRES_DATABASE:-flowpilot_agent}
       REDIS_URL: redis://redis:6379/0
       GITHUB_TOKEN: ${GITHUB_TOKEN:-}
       LLM_API_KEY: ${LLM_API_KEY:-}

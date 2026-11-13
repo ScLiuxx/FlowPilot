@@ -89,11 +89,12 @@ uvicorn app.main:app --host 0.0.0.0 --port 8000
 Docker:
 
 ```bash
-docker build -t flowpilot-agent-service .
+# The context of the build is the root of the repository, because the shared
+# protocol files live next to the service.
+docker build -f agent-service/Dockerfile -t flowpilot-agent-service .
 docker run --rm -p 8000:8000 \
   -e RABBITMQ_URL=amqp://guest:guest@rabbitmq:5672/ \
   -e POSTGRES_DSN=postgresql://flowpilot:flowpilot@postgres:5432/flowpilot_agent \
-  -v ../flowpilot-protocol:/app/flowpilot-protocol:ro \
   flowpilot-agent-service
 ```
 

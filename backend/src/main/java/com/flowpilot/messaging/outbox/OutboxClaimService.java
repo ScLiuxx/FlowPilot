@@ -9,7 +9,11 @@ import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.LocalDateTime;
+import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
+import java.util.function.Function;
+import java.util.stream.Collectors;
 
 /**
  * Claims the outbox rows for publishing.
@@ -37,10 +41,20 @@ public class OutboxClaimService {
      */
     @Transactional(propagation = Propagation.REQUIRES_NEW)
     public List<MessageOutbox> claimBatch(LocalDateTime now, int limit) {
-        List<MessageOutbox> candidates = outboxMapper.claimPending(now, limit);
-        return candidates.stream()
-                .filter(record -> outboxMapper.markPublishing(record.getId(), now) == 1)
-                .toList();
+        List<Long> ids = outboxMapper.claimPendingIds(now, limit);
+        if (ids.isEmpty()) {
+            return List.of();
+        }
+        Map<Long, MessageOutbox> rows = outboxMapper.selectByIds(ids).stream()
+                .collect(Collectors.toMap(MessageOutbox::getId, Function.identity()));
+        List<MessageOutbox> claimed = new ArrayList<>(ids.size());
+        for (Long id : ids) {
+            MessageOutbox record = rows.get(id);
+            if (record != null && outboxMapper.markPublishing(id, now) == 1) {
+                claimed.add(record);
+            }
+        }
+        return claimed;
     }
 
     /**
@@ -52,7 +66,11 @@ public class OutboxClaimService {
      */
     @Transactional(propagation = Propagation.REQUIRES_NEW)
     public List<MessageOutbox> recoverStale(LocalDateTime staleBefore, int limit) {
-        List<MessageOutbox> stale = outboxMapper.findStalePublishing(staleBefore, limit);
+        List<Long> ids = outboxMapper.findStalePublishingIds(staleBefore, limit);
+        if (ids.isEmpty()) {
+            return List.of();
+        }
+        List<MessageOutbox> stale = outboxMapper.selectByIds(ids);
         for (MessageOutbox record : stale) {
             outboxMapper.reschedule(record.getId(), LocalDateTime.now());
             log.warn("recovered stale outbox row id={} messageId={} publishingAt={}",

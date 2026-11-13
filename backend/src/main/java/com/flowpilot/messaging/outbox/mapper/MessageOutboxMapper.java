@@ -16,16 +16,33 @@ public interface MessageOutboxMapper extends BaseMapper<MessageOutbox> {
     /**
      * Claims a batch of pending messages. {@code FOR UPDATE SKIP LOCKED} lets several publisher
      * instances work in parallel without claiming the same row twice.
+     *
+     * <p>Only the identifiers are selected: the rows are sorted by the moment of their creation,
+     * and the sort would carry the whole payload of every message through the sort buffer of the
+     * database. A message with a payload of a few hundred kilobytes does not fit into it and the
+     * publisher fails with "out of sort memory". The payloads are read afterwards by their
+     * identifiers, which is a lookup by the primary key.
      */
     @Select("""
-            SELECT * FROM message_outbox
+            SELECT id FROM message_outbox
              WHERE status = 'PENDING'
                AND (next_retry_at IS NULL OR next_retry_at <= #{now})
              ORDER BY created_at
              LIMIT #{limit}
              FOR UPDATE SKIP LOCKED
             """)
-    List<MessageOutbox> claimPending(@Param("now") LocalDateTime now, @Param("limit") int limit);
+    List<Long> claimPendingIds(@Param("now") LocalDateTime now, @Param("limit") int limit);
+
+    /**
+     * Reads the rows of the claimed messages by their identifiers.
+     */
+    @Select("""
+            <script>
+            SELECT * FROM message_outbox WHERE id IN
+            <foreach collection="ids" item="id" open="(" separator="," close=")">#{id}</foreach>
+            </script>
+            """)
+    List<MessageOutbox> selectByIds(@Param("ids") List<Long> ids);
 
     /**
      * Moves a row into the publishing state.
@@ -85,15 +102,17 @@ public interface MessageOutboxMapper extends BaseMapper<MessageOutbox> {
      *
      * <p>The age of a claimed row is measured from the moment it was claimed: a row that was
      * created long ago and is published right now is not stale.
+     *
+     * <p>Only the identifiers are selected, for the same reason as in {@link #claimPendingIds}.
      */
     @Select("""
-            SELECT * FROM message_outbox
+            SELECT id FROM message_outbox
              WHERE status = 'PUBLISHING'
                AND publishing_at IS NOT NULL
                AND publishing_at < #{staleBefore}
              ORDER BY publishing_at
              LIMIT #{limit}
             """)
-    List<MessageOutbox> findStalePublishing(@Param("staleBefore") LocalDateTime staleBefore,
-                                            @Param("limit") int limit);
+    List<Long> findStalePublishingIds(@Param("staleBefore") LocalDateTime staleBefore,
+                                       @Param("limit") int limit);
 }

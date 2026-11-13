@@ -9,12 +9,51 @@ import org.apache.ibatis.annotations.Update;
 
 import java.time.LocalDateTime;
 import java.util.List;
+import java.util.Map;
+import java.util.Objects;
+import java.util.function.Function;
+import java.util.stream.Collectors;
 
 @Mapper
 public interface NodeExecutionMapper extends BaseMapper<NodeExecution> {
 
-    @Select("SELECT * FROM node_execution WHERE workflow_execution_id = #{executionId} ORDER BY id")
-    List<NodeExecution> findByWorkflowExecutionId(@Param("executionId") Long executionId);
+    /**
+     * Reads the nodes of an execution.
+     *
+     * <p>The identifiers are selected first and the rows are read afterwards: the output of a node
+     * carries the raw response of an external system and can be larger than the sort buffer of the
+     * database, which would make the sort fail with "out of sort memory".
+     */
+    @Select("SELECT id FROM node_execution WHERE workflow_execution_id = #{executionId} ORDER BY id")
+    List<Long> findIdsByWorkflowExecutionId(@Param("executionId") Long executionId);
+
+    @Select("""
+            <script>
+            SELECT * FROM node_execution WHERE id IN
+            <foreach collection="ids" item="id" open="(" separator="," close=")">#{id}</foreach>
+            </script>
+            """)
+    List<NodeExecution> selectByIds(@Param("ids") List<Long> ids);
+
+    default List<NodeExecution> findByWorkflowExecutionId(Long executionId) {
+        List<Long> ids = findIdsByWorkflowExecutionId(executionId);
+        if (ids.isEmpty()) {
+            return List.of();
+        }
+        return inOrder(ids, selectByIds(ids));
+    }
+
+    /**
+     * Returns the rows in the order of their identifiers.
+     */
+    static List<NodeExecution> inOrder(List<Long> ids, List<NodeExecution> rows) {
+        if (ids.isEmpty()) {
+            return List.of();
+        }
+        Map<Long, NodeExecution> byId = rows.stream()
+                .collect(Collectors.toMap(NodeExecution::getId, Function.identity(), (first, second) -> first));
+        return ids.stream().map(byId::get).filter(Objects::nonNull).toList();
+    }
 
     /**
      * Reads the node states of an execution without the JSON payloads.
@@ -304,24 +343,51 @@ public interface NodeExecutionMapper extends BaseMapper<NodeExecution> {
             """)
     int skip(@Param("id") Long id);
 
+    /**
+     * The running nodes whose lease expired.
+     *
+     * <p>Only the identifiers are selected, because the sort would carry the output of the nodes
+     * through the sort buffer of the database.
+     */
     @Select("""
-            SELECT * FROM node_execution
+            SELECT id FROM node_execution
              WHERE status = 'RUNNING'
                AND lease_expire_at IS NOT NULL
                AND lease_expire_at < #{now}
              ORDER BY lease_expire_at
              LIMIT #{limit}
             """)
-    List<NodeExecution> findExpiredLeases(@Param("now") LocalDateTime now, @Param("limit") int limit);
+    List<Long> findExpiredLeaseIds(@Param("now") LocalDateTime now, @Param("limit") int limit);
 
+    default List<NodeExecution> findExpiredLeases(LocalDateTime now, int limit) {
+        List<Long> ids = findExpiredLeaseIds(now, limit);
+        if (ids.isEmpty()) {
+            return List.of();
+        }
+        return inOrder(ids, selectByIds(ids));
+    }
+
+    /**
+     * The nodes that wait for their retry.
+     *
+     * <p>Only the identifiers are selected, for the same reason as in {@link #findExpiredLeaseIds}.
+     */
     @Select("""
-            SELECT * FROM node_execution
+            SELECT id FROM node_execution
              WHERE status = 'RETRY_WAIT'
                AND (next_retry_at IS NULL OR next_retry_at <= #{now})
              ORDER BY next_retry_at
              LIMIT #{limit}
             """)
-    List<NodeExecution> findRetryWaiting(@Param("now") LocalDateTime now, @Param("limit") int limit);
+    List<Long> findRetryWaitingIds(@Param("now") LocalDateTime now, @Param("limit") int limit);
+
+    default List<NodeExecution> findRetryWaiting(LocalDateTime now, int limit) {
+        List<Long> ids = findRetryWaitingIds(now, limit);
+        if (ids.isEmpty()) {
+            return List.of();
+        }
+        return inOrder(ids, selectByIds(ids));
+    }
 
     /**
      * The ready nodes that no worker took over.
@@ -330,15 +396,23 @@ public interface NodeExecutionMapper extends BaseMapper<NodeExecution> {
      * the node became ready, which is the moment the execution message was written.
      */
     @Select("""
-            SELECT * FROM node_execution
+            SELECT id FROM node_execution
              WHERE status = 'READY'
                AND (worker_id IS NULL OR worker_id = '')
                AND updated_at <= #{deadline}
              ORDER BY updated_at
              LIMIT #{limit}
             """)
-    List<NodeExecution> findReadyWithoutWorker(@Param("deadline") LocalDateTime deadline,
-                                                @Param("limit") int limit);
+    List<Long> findReadyWithoutWorkerIds(@Param("deadline") LocalDateTime deadline,
+                                          @Param("limit") int limit);
+
+    default List<NodeExecution> findReadyWithoutWorker(LocalDateTime deadline, int limit) {
+        List<Long> ids = findReadyWithoutWorkerIds(deadline, limit);
+        if (ids.isEmpty()) {
+            return List.of();
+        }
+        return inOrder(ids, selectByIds(ids));
+    }
 
     /**
      * Extends the lease of a running node without changing the worker.
