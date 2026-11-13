@@ -1463,6 +1463,15 @@ def _row_to_outbox(row: Any) -> OutboxRecord:
 
 SCHEMA_PATH = Path(__file__).resolve().parent / "schema.sql"
 
+#: The advisory lock that serialises the schema creation between the replicas.
+#:
+#: ``CREATE TABLE IF NOT EXISTS`` is not safe under concurrency: two sessions
+#: can both see the table as missing and both try to create it, and the second
+#: one fails with a unique violation on ``pg_type``. The agent service is
+#: deployed with several replicas that start at the same time, therefore the
+#: DDL runs under a lock that only one of them holds at a time.
+SCHEMA_LOCK_KEY = 8_147_320_001
+
 
 async def apply_schema(dsn: str, *, timeout: int = 10) -> None:
     """Create the agent tables if they do not exist yet."""
@@ -1470,5 +1479,9 @@ async def apply_schema(dsn: str, *, timeout: int = 10) -> None:
 
     ddl = SCHEMA_PATH.read_text(encoding="utf-8")
     async with await psycopg.AsyncConnection.connect(dsn, connect_timeout=timeout) as conn:
-        await conn.execute(ddl)
-        await conn.commit()
+        await conn.execute("SELECT pg_advisory_lock(%s)", (SCHEMA_LOCK_KEY,))
+        try:
+            await conn.execute(ddl)
+            await conn.commit()
+        finally:
+            await conn.execute("SELECT pg_advisory_unlock(%s)", (SCHEMA_LOCK_KEY,))
