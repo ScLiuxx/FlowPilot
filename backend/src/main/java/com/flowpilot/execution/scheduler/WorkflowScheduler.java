@@ -141,7 +141,34 @@ public class WorkflowScheduler {
                 }
                 dispatch(successor, definition, document, execution);
             }
+            scheduleWaitingNodes(executionId, document, execution);
             checkCompletion(executionId);
+        }
+    }
+
+    /**
+     * Schedules the nodes whose dependencies are satisfied and that were not scheduled yet.
+     *
+     * <p>A node whose dispatch was blocked by the concurrency limit of the workflow stays
+     * pending. Nobody would schedule it later, because it is not the successor of a node that
+     * finishes later — it is the successor of a node that finished before. Without this the
+     * workflow would wait for a node that no message will ever trigger.
+     */
+    private void scheduleWaitingNodes(Long executionId,
+                                      WorkflowDefinitionDocument document,
+                                      WorkflowExecution execution) {
+        for (NodeExecution node : executionService.nodes(executionId)) {
+            if (!NodeStatus.PENDING.name().equals(node.getStatus())) {
+                continue;
+            }
+            WorkflowNodeDefinition definition = dependencyResolver.findNode(document, node.getNodeKey());
+            if (definition == null) {
+                continue;
+            }
+            if (!dependencyResolver.canExecute(node, document)) {
+                continue;
+            }
+            dispatch(node, definition, document, execution);
         }
     }
 

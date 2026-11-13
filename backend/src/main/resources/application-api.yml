@@ -12,7 +12,6 @@ spring:
 flowpilot:
   worker:
     id: ${WORKER_ID:api-01}
-    max-concurrency: 4
 
 logging:
   level:

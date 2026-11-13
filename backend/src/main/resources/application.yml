@@ -105,6 +105,9 @@ flowpilot:
     # same name cannot be told apart. When nothing is configured, the hostname
     # of the container is used — Docker sets it to the unique container id.
     id: ${WORKER_ID:${HOSTNAME:worker-01}}
+    # How many nodes of one workflow may run at the same time. The value has to be the same on
+    # every instance: the instance that schedules the nodes depends on which one consumed the
+    # message, and a different limit per instance would make the scheduling depend on it.
     max-concurrency: 8
     lease-seconds: 60
     # The worker extends the lease of a running node, so a node that takes longer than the

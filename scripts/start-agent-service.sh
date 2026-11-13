@@ -21,11 +21,14 @@ if [ ! -x "$VENV/bin/python" ]; then
 fi
 
 cd "$AGENT_DIR" || exit 1
+# The broker and the database are addressed by their url, so the script can be
+# pointed at another infrastructure, for example at the containers of the
+# compose file.
 # The token of the GitHub API is inherited from the environment: without it the
 # public rate limit applies and the analysis fails with a rate limit error.
 setsid nohup env \
-  RABBITMQ_URL="amqp://flowpilot:flowpilot@127.0.0.1:5672/" \
-  POSTGRES_DSN="postgresql://flowpilot:flowpilot@127.0.0.1:5432/flowpilot_agent" \
+  RABBITMQ_URL="${RABBITMQ_URL:-amqp://flowpilot:flowpilot@127.0.0.1:5672/}" \
+  POSTGRES_DSN="${POSTGRES_DSN:-postgresql://flowpilot:flowpilot@127.0.0.1:5432/flowpilot_agent}" \
   REDIS_URL="${REDIS_URL:-redis://127.0.0.1:6379/0}" \
   GITHUB_TOKEN="${GITHUB_TOKEN:-${GH_TOKEN:-}}" \
   HTTP_PROXY="${HTTP_PROXY:-}" \

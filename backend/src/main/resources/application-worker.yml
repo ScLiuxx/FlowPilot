@@ -16,7 +16,6 @@ flowpilot:
     # Nothing is configured on purpose: the hostname of the container is used, which Docker
     # sets to the unique container id. WORKER_ID pins the identity of a single replica.
     id: ${WORKER_ID:${HOSTNAME:worker-01}}
-    max-concurrency: 16
     lease-seconds: 60
 
 logging:
