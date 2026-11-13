@@ -180,11 +180,40 @@ public class WorkflowService {
                 || definition.getOwnerId().equals(userId);
     }
 
-    public List<WorkflowVersion> listVersions(Long workflowId) {
+    /**
+     * The versions of a workflow that the user may see.
+     *
+     * <p>The versions carry the whole definition of the workflow, so they need the same check as
+     * the workflow itself. Without it a user could read the definition of a personal workflow of
+     * somebody else, even though the workflow itself is protected.
+     */
+    public List<WorkflowVersion> listVersions(Long workflowId, Long ownerId) {
+        requireOwned(workflowId, ownerId);
+        return listVersionsInternal(workflowId);
+    }
+
+    public WorkflowVersion getVersion(Long workflowId, Long versionId, Long ownerId) {
+        requireOwned(workflowId, ownerId);
+        return getVersionInternal(workflowId, versionId);
+    }
+
+    /**
+     * The versions of a workflow, without a check of the ownership.
+     *
+     * <p>Only for the internal paths that already own the workflow: the worker, the scheduler and
+     * the recovery scanners. A request of a user has to go through the variants that check the
+     * ownership.
+     */
+    public List<WorkflowVersion> listVersionsInternal(Long workflowId) {
         return versionMapper.findByWorkflowId(workflowId);
     }
 
-    public WorkflowVersion getVersion(Long workflowId, Long versionId) {
+    /**
+     * A version of a workflow, without a check of the ownership.
+     *
+     * @see #listVersionsInternal(Long)
+     */
+    public WorkflowVersion getVersionInternal(Long workflowId, Long versionId) {
         WorkflowVersion version = versionMapper.selectById(versionId);
         if (version == null || !version.getWorkflowId().equals(workflowId)) {
             throw new BizException(ErrorCode.WF_VERSION_NOT_FOUND);

@@ -70,7 +70,10 @@ public class ReportController {
     private void requireAccess(AnalysisReport report) {
         WorkflowExecution execution = executionMapper.selectById(report.getWorkflowExecutionId());
         if (execution == null) {
-            return;
+            // A report without an execution has no owner that could be checked, so it must not be
+            // readable. Letting it through would turn a broken row into a data leak.
+            throw new com.flowpilot.common.exception.BizException(
+                    com.flowpilot.common.result.ErrorCode.RP_FORBIDDEN);
         }
         if (!CurrentUser.isAdmin() && !execution.getUserId().equals(CurrentUser.requireId())) {
             throw new com.flowpilot.common.exception.BizException(

@@ -256,7 +256,7 @@ class HumanApprovalIntegrationTest {
                 node("human_review", "HUMAN", Map.of("approvalType", "REPORT_REVIEW"), List.of()));
 
         var workflow = workflowService.create(name, null, "TEST", userId, document);
-        var version = workflowService.listVersions(workflow.getId()).get(0);
+        var version = workflowService.listVersionsInternal(workflow.getId()).get(0);
         workflowService.publish(workflow.getId(), version.getId(), userId);
         WorkflowVersion published = workflowService.getPublishedVersion(workflow.getId());
 
@@ -270,7 +270,7 @@ class HumanApprovalIntegrationTest {
                 node("analyze", "AGENT", Map.of("agentType", "REPOSITORY_ANALYST"), List.of()));
 
         var workflow = workflowService.create(name, null, "TEST", userId, document);
-        var version = workflowService.listVersions(workflow.getId()).get(0);
+        var version = workflowService.listVersionsInternal(workflow.getId()).get(0);
         workflowService.publish(workflow.getId(), version.getId(), userId);
         WorkflowVersion published = workflowService.getPublishedVersion(workflow.getId());
 
