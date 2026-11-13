@@ -25,8 +25,16 @@ async def postgres_checkpointer(dsn: str) -> AsyncIterator[Any]:
     """Open a PostgreSQL checkpointer and make sure the schema exists."""
     from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 
+    from app.persistence.repository import SCHEMA_LOCK_KEY
+
     async with AsyncPostgresSaver.from_conn_string(dsn) as saver:
-        await saver.setup()
+        # The setup runs DDL, and several replicas start at the same time.
+        # The advisory lock makes sure that only one of them creates the tables.
+        await saver.conn.execute("SELECT pg_advisory_lock(%s)", (SCHEMA_LOCK_KEY,))
+        try:
+            await saver.setup()
+        finally:
+            await saver.conn.execute("SELECT pg_advisory_unlock(%s)", (SCHEMA_LOCK_KEY,))
         yield saver
 
 
