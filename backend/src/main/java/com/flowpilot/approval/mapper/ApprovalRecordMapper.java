@@ -19,6 +19,23 @@ public interface ApprovalRecordMapper extends BaseMapper<ApprovalRecord> {
     ApprovalRecord findPendingByExecution(@Param("executionId") Long executionId);
 
     /**
+     * The number of the pending approvals of the executions of one user.
+     *
+     * <p>The owner is {@code null} for the administrator, who sees the approvals of everybody.
+     */
+    @Select("""
+            <script>
+            SELECT COUNT(*) FROM approval_record a
+              JOIN workflow_execution e ON e.id = a.workflow_execution_id
+             WHERE a.status = 'PENDING'
+               <if test="userId != null">
+                 AND e.user_id = #{userId}
+               </if>
+            </script>
+            """)
+    long countPendingByOwner(@Param("userId") Long userId);
+
+    /**
      * Conditional decision update. Only the first decision wins, which makes the approval
      * idempotent even if the user double clicks the approve button.
      */

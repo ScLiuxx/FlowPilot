@@ -77,4 +77,26 @@ public interface WorkflowExecutionMapper extends BaseMapper<WorkflowExecution> {
              LIMIT #{limit}
             """)
     List<WorkflowExecution> findRecentByUser(@Param("userId") Long userId, @Param("limit") int limit);
+
+    /**
+     * The number of the executions of one user.
+     *
+     * <p>The owner is {@code null} for the administrator, who sees the executions of everybody.
+     *
+     * @param userId the owner of the executions, {@code null} counts all of them
+     * @param status the status to count, {@code null} counts every status
+     */
+    @Select("""
+            <script>
+            SELECT COUNT(*) FROM workflow_execution
+             WHERE 1 = 1
+               <if test="userId != null">
+                 AND user_id = #{userId}
+               </if>
+               <if test="status != null and status != ''">
+                 AND status = #{status}
+               </if>
+            </script>
+            """)
+    long countByOwner(@Param("userId") Long userId, @Param("status") String status);
 }
