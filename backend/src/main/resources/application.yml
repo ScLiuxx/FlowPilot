@@ -100,7 +100,11 @@ flowpilot:
       secret: ${JWT_SECRET:flowpilot-development-secret-key-change-me-in-production-000}
       expiration-seconds: 7200
   worker:
-    id: ${WORKER_ID:worker-01}
+    # The identity of the worker. It has to be unique per replica: the lease
+    # records the owner, and the logs and the metrics of two replicas with the
+    # same name cannot be told apart. When nothing is configured, the hostname
+    # of the container is used — Docker sets it to the unique container id.
+    id: ${WORKER_ID:${HOSTNAME:worker-01}}
     max-concurrency: 8
     lease-seconds: 60
     # The worker extends the lease of a running node, so a node that takes longer than the

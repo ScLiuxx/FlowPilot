@@ -11,7 +11,11 @@ spring:
 
 flowpilot:
   worker:
-    id: ${WORKER_ID:worker-01}
+    # The identity of a worker replica. It has to be unique per replica, because the lease
+    # records the owner and the logs of two replicas with the same name cannot be told apart.
+    # Nothing is configured on purpose: the hostname of the container is used, which Docker
+    # sets to the unique container id. WORKER_ID pins the identity of a single replica.
+    id: ${WORKER_ID:${HOSTNAME:worker-01}}
     max-concurrency: 16
     lease-seconds: 60
 

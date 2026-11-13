@@ -122,14 +122,19 @@ services:
     build:
       context: ./backend
       dockerfile: Dockerfile
-    container_name: flowpilot-backend-worker
+    # No container_name here: it would prevent the service from being scaled
+    # to several replicas, because the container names would collide.
     environment:
       SPRING_PROFILES_ACTIVE: worker
       MYSQL_HOST: mysql
       REDIS_HOST: redis
       RABBITMQ_HOST: rabbitmq
       JWT_SECRET: ${JWT_SECRET:-flowpilot-development-secret-key-change-me-in-production-000}
-      WORKER_ID: worker-01
+      # The identity of the worker has to be unique per replica, otherwise the
+      # logs and the metrics of the replicas cannot be told apart. Nothing is
+      # configured here on purpose: the backend falls back to the hostname of
+      # the container, which Docker sets to the unique container id. Set
+      # WORKER_ID to pin the identity of a single replica.
       # The secret of the internal endpoints of the agent service.
       AGENT_INTERNAL_TOKEN: ${AGENT_INTERNAL_TOKEN:-flowpilot-internal-token-change-me-in-production}
     depends_on:
@@ -147,7 +152,8 @@ services:
     build:
       context: .
       dockerfile: agent-service/Dockerfile
-    container_name: flowpilot-agent-worker
+    # No container_name here either: the agent worker can be scaled as well,
+    # and the container names would collide.
     environment:
       RABBITMQ_HOST: rabbitmq
       RABBITMQ_PORT: 5672
@@ -172,6 +178,8 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+    deploy:
+      replicas: 2
     networks: [flowpilot]
 
   frontend:

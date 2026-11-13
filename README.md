@@ -208,6 +208,19 @@ docker compose up -d
 
 首次启动时 Flyway 会自动创建表结构，并发布一个内置的 **GitHub 技术尽调** 工作流。
 
+### 扩容 Worker
+
+`backend-worker` 与 `agent-worker` 都没有设置 `container_name`：容器名必须唯一，
+固定名字会让服务无法扩容。Compose 文件里的 `deploy.replicas` 已经声明了 2 个副本，
+也可以在启动时直接指定：
+
+```bash
+docker compose up -d --scale backend-worker=4 --scale agent-worker=4
+```
+
+Worker 的身份默认取自容器主机名（Docker 将其设为容器 ID，因此每个副本都不同），
+日志与指标据此区分副本。也可以用 `WORKER_ID` 显式固定某一个副本的身份。
+
 ### 可观测性与网关
 
 `docker-compose.yml` 除业务服务外，还包含 4 个基础设施容器，配置统一放在 `ops/` 目录下：
