@@ -77,6 +77,16 @@ public interface NodeExecutionMapper extends BaseMapper<NodeExecution> {
                                         @Param("nodeKey") String nodeKey);
 
     /**
+     * Reads a node that belongs to the given execution.
+     *
+     * <p>The execution is part of the lookup, so a node of somebody else's execution cannot be
+     * read through the identifier of an own execution.
+     */
+    @Select("SELECT * FROM node_execution WHERE id = #{nodeId} AND workflow_execution_id = #{executionId}")
+    NodeExecution findByIdAndExecutionId(@Param("nodeId") Long nodeId,
+                                         @Param("executionId") Long executionId);
+
+    /**
      * Marks a pending node as ready and stores its input.
      *
      * <p>The input is persisted so the worker reads the same values the scheduler computed, even

@@ -51,7 +51,7 @@ public class SeedWorkflowInitializer implements ApplicationRunner {
             if (existing.isEmpty()) {
                 var definition = workflowService.create(document.getName(), document.getDescription(),
                         "GITHUB_DUE_DILIGENCE", ownerId, document);
-                var version = workflowService.listVersions(definition.getId()).get(0);
+                var version = workflowService.listVersionsInternal(definition.getId()).get(0);
                 workflowService.publish(definition.getId(), version.getId(), ownerId);
                 log.info("the seed workflow was published, workflowId={}", definition.getId());
                 return;
@@ -72,7 +72,7 @@ public class SeedWorkflowInitializer implements ApplicationRunner {
      */
     private void publishNewVersionIfChanged(Long workflowId, WorkflowDefinitionDocument document) {
         String hash = JsonUtils.sha256Hex(JsonUtils.canonicalize(document));
-        boolean known = workflowService.listVersions(workflowId).stream()
+        boolean known = workflowService.listVersionsInternal(workflowId).stream()
                 .anyMatch(version -> hash.equals(version.getDefinitionHash()));
         if (known) {
             log.info("the seed workflow already exists and is up to date, skipping");

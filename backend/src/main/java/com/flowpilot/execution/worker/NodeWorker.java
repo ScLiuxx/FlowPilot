@@ -316,7 +316,7 @@ public class NodeWorker {
         if (execution == null) {
             return new WorkflowDefinitionDocument();
         }
-        WorkflowVersion version = workflowService.getVersion(execution.getWorkflowId(),
+        WorkflowVersion version = workflowService.getVersionInternal(execution.getWorkflowId(),
                 execution.getWorkflowVersionId());
         return workflowService.parse(version.getDefinitionJson());
     }

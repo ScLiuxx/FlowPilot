@@ -238,7 +238,7 @@ public class RecoveryScheduler {
     }
 
     private WorkflowDefinitionDocument loadDocument(WorkflowExecution execution) {
-        WorkflowVersion version = workflowService.getVersion(execution.getWorkflowId(),
+        WorkflowVersion version = workflowService.getVersionInternal(execution.getWorkflowId(),
                 execution.getWorkflowVersionId());
         return workflowService.parse(version.getDefinitionJson());
     }

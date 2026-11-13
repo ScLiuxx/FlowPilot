@@ -82,7 +82,7 @@ class AgentCoordinationIntegrationTest {
                 node("analyze", "AGENT", Map.of("agentType", "REPOSITORY_ANALYST"), List.of("collect")));
 
         var workflow = workflowService.create("agent demo", null, "TEST", userId, document);
-        var version = workflowService.listVersions(workflow.getId()).get(0);
+        var version = workflowService.listVersionsInternal(workflow.getId()).get(0);
         workflowService.publish(workflow.getId(), version.getId(), userId);
         WorkflowVersion published = workflowService.getPublishedVersion(workflow.getId());
 
@@ -237,7 +237,7 @@ class AgentCoordinationIntegrationTest {
                 node("analyze", "AGENT", Map.of("agentType", "REPOSITORY_ANALYST"), List.of()));
 
         var workflow = workflowService.create(name, null, "TEST", userId, document);
-        var version = workflowService.listVersions(workflow.getId()).get(0);
+        var version = workflowService.listVersionsInternal(workflow.getId()).get(0);
         workflowService.publish(workflow.getId(), version.getId(), userId);
         WorkflowVersion published = workflowService.getPublishedVersion(workflow.getId());
 

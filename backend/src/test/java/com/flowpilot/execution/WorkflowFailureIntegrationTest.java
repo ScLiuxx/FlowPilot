@@ -97,7 +97,7 @@ class WorkflowFailureIntegrationTest {
                 .build();
 
         var workflow = workflowService.create(name, null, "TEST", userId, document);
-        var version = workflowService.listVersions(workflow.getId()).get(0);
+        var version = workflowService.listVersionsInternal(workflow.getId()).get(0);
         workflowService.publish(workflow.getId(), version.getId(), userId);
         WorkflowVersion published = workflowService.getPublishedVersion(workflow.getId());
 

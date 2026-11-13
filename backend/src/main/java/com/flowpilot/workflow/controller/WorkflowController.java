@@ -85,7 +85,7 @@ public class WorkflowController {
 
     @GetMapping("/{workflowId}/versions")
     public Result<List<WorkflowDtos.VersionResponse>> versions(@PathVariable Long workflowId) {
-        return Result.success(workflowService.listVersions(workflowId).stream()
+        return Result.success(workflowService.listVersions(workflowId, CurrentUser.requireId()).stream()
                 .map(WorkflowController::toResponse)
                 .toList());
     }
@@ -93,7 +93,8 @@ public class WorkflowController {
     @GetMapping("/{workflowId}/versions/{versionId}")
     public Result<WorkflowDtos.VersionResponse> version(@PathVariable Long workflowId,
                                                        @PathVariable Long versionId) {
-        return Result.success(toResponse(workflowService.getVersion(workflowId, versionId)));
+        return Result.success(toResponse(
+                workflowService.getVersion(workflowId, versionId, CurrentUser.requireId())));
     }
 
     @PostMapping("/{workflowId}/versions")

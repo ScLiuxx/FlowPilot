@@ -73,7 +73,7 @@ class ExecutionEngineIntegrationTest {
                 node("second", "CODE", Map.of("operation", "identity"), List.of("start")));
 
         var definition = workflowService.create("parallel demo", "demo", "TEST", userId, valid);
-        var version = workflowService.listVersions(definition.getId()).get(0);
+        var version = workflowService.listVersionsInternal(definition.getId()).get(0);
         var published = workflowService.publish(definition.getId(), version.getId(), userId);
 
         assertThat(published.getStatus()).isEqualTo("PUBLISHED");
@@ -107,7 +107,7 @@ class ExecutionEngineIntegrationTest {
                 node("d", "CODE", Map.of("operation", "identity"), List.of("b", "c")));
 
         var workflow = workflowService.create("parallel", null, "TEST", userId, document);
-        var version = workflowService.listVersions(workflow.getId()).get(0);
+        var version = workflowService.listVersionsInternal(workflow.getId()).get(0);
         workflowService.publish(workflow.getId(), version.getId(), userId);
         var published = workflowService.getPublishedVersion(workflow.getId());
 
@@ -149,7 +149,7 @@ class ExecutionEngineIntegrationTest {
                 node("a", "CODE", Map.of("operation", "identity"), List.of()));
 
         var workflow = workflowService.create("idempotent", null, "TEST", userId, document);
-        var version = workflowService.listVersions(workflow.getId()).get(0);
+        var version = workflowService.listVersionsInternal(workflow.getId()).get(0);
         workflowService.publish(workflow.getId(), version.getId(), userId);
         var published = workflowService.getPublishedVersion(workflow.getId());
 
@@ -173,7 +173,7 @@ class ExecutionEngineIntegrationTest {
                 node("a", "CODE", Map.of("operation", "identity"), List.of()));
 
         var workflow = workflowService.create("retry", null, "TEST", userId, document);
-        var version = workflowService.listVersions(workflow.getId()).get(0);
+        var version = workflowService.listVersionsInternal(workflow.getId()).get(0);
         workflowService.publish(workflow.getId(), version.getId(), userId);
         var published = workflowService.getPublishedVersion(workflow.getId());
 
@@ -209,7 +209,7 @@ class ExecutionEngineIntegrationTest {
                 node("a", "CODE", Map.of("operation", "identity"), List.of()));
 
         var workflow = workflowService.create("fencing", null, "TEST", userId, document);
-        var version = workflowService.listVersions(workflow.getId()).get(0);
+        var version = workflowService.listVersionsInternal(workflow.getId()).get(0);
         workflowService.publish(workflow.getId(), version.getId(), userId);
         var published = workflowService.getPublishedVersion(workflow.getId());
 
@@ -273,7 +273,7 @@ class ExecutionEngineIntegrationTest {
                 node("a", "CODE", Map.of("operation", "identity"), List.of()));
 
         var workflow = workflowService.create("events", null, "TEST", userId, document);
-        var version = workflowService.listVersions(workflow.getId()).get(0);
+        var version = workflowService.listVersionsInternal(workflow.getId()).get(0);
         workflowService.publish(workflow.getId(), version.getId(), userId);
         var published = workflowService.getPublishedVersion(workflow.getId());
 
@@ -307,7 +307,7 @@ class ExecutionEngineIntegrationTest {
                 node("a", "CODE", Map.of("operation", "identity"), List.of()));
 
         var workflow = workflowService.create("retry delay", null, "TEST", userId, document);
-        var version = workflowService.listVersions(workflow.getId()).get(0);
+        var version = workflowService.listVersionsInternal(workflow.getId()).get(0);
         workflowService.publish(workflow.getId(), version.getId(), userId);
         var published = workflowService.getPublishedVersion(workflow.getId());
 
@@ -354,7 +354,7 @@ class ExecutionEngineIntegrationTest {
                 node("skipped", "CODE", Map.of("operation", "identity"), List.of("check")));
 
         var workflow = workflowService.create("branching", null, "TEST", userId, document);
-        var version = workflowService.listVersions(workflow.getId()).get(0);
+        var version = workflowService.listVersionsInternal(workflow.getId()).get(0);
         workflowService.publish(workflow.getId(), version.getId(), userId);
         var published = workflowService.getPublishedVersion(workflow.getId());
 

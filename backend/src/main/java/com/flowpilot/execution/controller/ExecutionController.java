@@ -79,7 +79,7 @@ public class ExecutionController {
         workflowService.requireOwned(workflowId, userId);
         WorkflowVersion version = request.getWorkflowVersionId() == null
                 ? workflowService.getPublishedVersion(workflowId)
-                : workflowService.getVersion(workflowId, request.getWorkflowVersionId());
+                : workflowService.getVersion(workflowId, request.getWorkflowVersionId(), userId);
         if (!"PUBLISHED".equals(version.getStatus())) {
             throw new BizException(ErrorCode.WF_VERSION_NOT_PUBLISHED);
         }
@@ -129,6 +129,12 @@ public class ExecutionController {
     public Result<List<ExecutionDtos.AttemptResponse>> attempts(@PathVariable Long executionId,
                                                                  @PathVariable Long nodeExecutionId) {
         executionService.requireAccessible(executionId, CurrentUser.requireId(), CurrentUser.isAdmin());
+        // The node has to belong to the execution. Without the check a user could name the node
+        // of somebody else's execution and read its attempts, because the attempts are looked up
+        // by the node alone.
+        if (nodeExecutionMapper.findByIdAndExecutionId(nodeExecutionId, executionId) == null) {
+            throw new BizException(ErrorCode.EX_FORBIDDEN);
+        }
         List<ExecutionDtos.AttemptResponse> attempts = attemptMapper.findByNodeExecutionId(nodeExecutionId)
                 .stream()
                 .map(ExecutionController::toResponse)
