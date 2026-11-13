@@ -415,6 +415,43 @@ public interface NodeExecutionMapper extends BaseMapper<NodeExecution> {
     }
 
     /**
+     * The number of the nodes of the executions of one user.
+     *
+     * <p>The owner is {@code null} for the administrator, who sees the nodes of everybody.
+     */
+    @Select("""
+            <script>
+            SELECT COUNT(*) FROM node_execution n
+              JOIN workflow_execution e ON e.id = n.workflow_execution_id
+             WHERE 1 = 1
+               <if test="userId != null">
+                 AND e.user_id = #{userId}
+               </if>
+            </script>
+            """)
+    long countByOwner(@Param("userId") Long userId);
+
+    /**
+     * The states of the nodes of the executions of one user.
+     *
+     * <p>Only the states are read, the payloads of the nodes are not needed for the statistics.
+     */
+    @Select("""
+            <script>
+            SELECT n.id, n.workflow_execution_id, n.node_key, n.node_type, n.status,
+                   n.current_attempt, n.max_attempts, n.worker_id, n.lease_token,
+                   n.error_code, n.error_message, n.version, n.started_at, n.finished_at
+              FROM node_execution n
+              JOIN workflow_execution e ON e.id = n.workflow_execution_id
+             WHERE 1 = 1
+               <if test="userId != null">
+                 AND e.user_id = #{userId}
+               </if>
+            </script>
+            """)
+    List<NodeExecution> findStatesByOwner(@Param("userId") Long userId);
+
+    /**
      * Extends the lease of a running node without changing the worker.
      *
      * <p>The recovery scanner uses it when the agent service reports that the agent is still

@@ -70,7 +70,13 @@ public class SseEventBroadcaster {
                 }
             }, new org.springframework.data.redis.listener.ChannelTopic(
                     ExecutionEventPublisher.CHANNEL));
+            // The container creates the Redis subscriber in its initialisation callback. Without it
+            // the container starts, but it never subscribes to the channel, and the events of the
+            // other instances never reach the connected consoles.
+            listenerContainer.afterPropertiesSet();
             listenerContainer.start();
+            log.info("the SSE notification listener is subscribed to the channel {}",
+                    ExecutionEventPublisher.CHANNEL);
         } catch (Exception ex) {
             log.warn("SSE notification listener could not be started: {}", ex.getMessage());
         }

@@ -458,7 +458,12 @@ public class WorkflowScheduler {
             return;
         }
         List<NodeExecution> nodes = executionService.nodes(executionId);
-        boolean anyActive = false;
+        // A node that is in flight: it is running, it is queued for a worker or it waits for
+        // its retry. Its result is still awaited.
+        boolean anyInFlight = false;
+        // A node that was not started yet. It does not keep the workflow alive: as soon as the
+        // workflow fails, it is cancelled with the rest of the workflow.
+        boolean anyNotStarted = false;
         boolean anyFailed = false;
         boolean anyWaitingHuman = false;
         int completed = 0;
@@ -467,7 +472,8 @@ public class WorkflowScheduler {
         for (NodeExecution node : nodes) {
             NodeStatus status = NodeStatus.valueOf(node.getStatus());
             switch (status) {
-                case PENDING, READY, RUNNING, RETRY_WAIT -> anyActive = true;
+                case PENDING -> anyNotStarted = true;
+                case READY, RUNNING, RETRY_WAIT -> anyInFlight = true;
                 case WAITING_HUMAN -> anyWaitingHuman = true;
                 // A cancelled node was stopped on purpose, so it is not a failure.
                 case FAILED -> {
@@ -476,7 +482,7 @@ public class WorkflowScheduler {
                 }
                 case CANCELED -> completed++;
                 case SUCCEEDED, SKIPPED -> completed++;
-                default -> anyActive = true;
+                default -> anyInFlight = true;
             }
         }
 
@@ -487,13 +493,18 @@ public class WorkflowScheduler {
             return;
         }
 
-        // A node that is still running is awaited first. The workflow only fails once nothing is
-        // active any more, so the result of a running node is not thrown away.
-        if (anyActive) {
+        if (anyFailed) {
+            // The nodes that are still in flight are awaited first, so their result is not thrown
+            // away. The nodes that were not started yet do not wait: they are cancelled with the
+            // workflow. Without this the workflow would stay in the running state forever, because
+            // a node that waits for a failed predecessor can never run.
+            if (anyInFlight) {
+                return;
+            }
+            failWorkflow(execution, nodes);
             return;
         }
-        if (anyFailed) {
-            failWorkflow(execution, nodes);
+        if (anyInFlight || anyNotStarted) {
             return;
         }
         if (anyWaitingHuman) {

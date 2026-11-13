@@ -13,6 +13,8 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionSynchronization;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 
 import java.time.LocalDateTime;
 import java.util.List;
@@ -57,11 +59,32 @@ public class ExecutionEventService {
                 .createdAt(LocalDateTime.now())
                 .build();
         eventMapper.insert(event);
-        // The notification is published after the insert. The row is not visible to other
-        // transactions until the current one commits, so the subscribers pick it up a moment
-        // later, which is harmless because the event list is the authoritative source.
-        eventPublisher.publish(workflowExecutionId, sequence, eventType.name());
+        // The notification goes out after the transaction commits. The subscribers read the
+        // event from the database, and an uncommitted row is invisible to them: a notification
+        // that is published inside the transaction would make them look for a row that is not
+        // there yet, and the event would be lost for good.
+        publishAfterCommit(workflowExecutionId, sequence, eventType.name());
         return event;
+    }
+
+    /**
+     * Publishes the notification once the transaction of the caller committed.
+     *
+     * <p>The event is only visible to the other transactions after the commit, therefore the
+     * notification has to wait for it. Without a transaction the notification is published right
+     * away, because there is nothing to wait for.
+     */
+    private void publishAfterCommit(Long workflowExecutionId, long sequence, String eventType) {
+        if (!TransactionSynchronizationManager.isSynchronizationActive()) {
+            eventPublisher.publish(workflowExecutionId, sequence, eventType);
+            return;
+        }
+        TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+            @Override
+            public void afterCommit() {
+                eventPublisher.publish(workflowExecutionId, sequence, eventType);
+            }
+        });
     }
 
     /**

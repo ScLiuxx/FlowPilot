@@ -1,13 +1,10 @@
 package com.flowpilot.monitoring.controller;
 
-import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
-import com.flowpilot.agent.entity.AgentInvocation;
 import com.flowpilot.agent.mapper.AgentInvocationMapper;
-import com.flowpilot.approval.entity.ApprovalRecord;
 import com.flowpilot.approval.mapper.ApprovalRecordMapper;
 import com.flowpilot.common.result.Result;
+import com.flowpilot.common.security.CurrentUser;
 import com.flowpilot.execution.entity.NodeExecution;
-import com.flowpilot.execution.entity.WorkflowExecution;
 import com.flowpilot.execution.mapper.NodeExecutionMapper;
 import com.flowpilot.execution.mapper.WorkflowExecutionMapper;
 import com.flowpilot.monitoring.sse.SseEventBroadcaster;
@@ -21,6 +18,9 @@ import java.util.Map;
 
 /**
  * Aggregated runtime statistics for the console dashboard.
+ *
+ * <p>The statistics belong to the executions of the user. The administrator sees the numbers of
+ * everybody, a normal user only sees its own.
  */
 @RestController
 @RequestMapping("/api/v1/monitoring")
@@ -35,37 +35,24 @@ public class MonitoringController {
 
     @GetMapping("/overview")
     public Result<Map<String, Object>> overview() {
+        Long owner = owner();
         Map<String, Object> overview = new LinkedHashMap<>();
-        overview.put("totalExecutions", countExecutions(null));
-        overview.put("runningExecutions", countExecutions("RUNNING"));
-        overview.put("queuedExecutions", countExecutions("QUEUED"));
-        overview.put("waitingHumanExecutions", countExecutions("WAITING_HUMAN"));
-        overview.put("retryWaitExecutions", countExecutions("RETRY_WAIT"));
-        overview.put("succeededExecutions", countExecutions("SUCCEEDED"));
-        overview.put("failedExecutions", countExecutions("FAILED"));
-        overview.put("canceledExecutions", countExecutions("CANCELED"));
-        overview.put("totalNodes", nodeExecutionMapper.selectCount(null));
-        overview.put("pendingApprovals", approvalMapper.selectCount(new LambdaQueryWrapper<ApprovalRecord>()
-                .eq(ApprovalRecord::getStatus, ApprovalRecord.STATUS_PENDING)));
+        overview.put("totalExecutions", executionMapper.countByOwner(owner, null));
+        overview.put("runningExecutions", executionMapper.countByOwner(owner, "RUNNING"));
+        overview.put("queuedExecutions", executionMapper.countByOwner(owner, "QUEUED"));
+        overview.put("waitingHumanExecutions", executionMapper.countByOwner(owner, "WAITING_HUMAN"));
+        overview.put("retryWaitExecutions", executionMapper.countByOwner(owner, "RETRY_WAIT"));
+        overview.put("succeededExecutions", executionMapper.countByOwner(owner, "SUCCEEDED"));
+        overview.put("failedExecutions", executionMapper.countByOwner(owner, "FAILED"));
+        overview.put("canceledExecutions", executionMapper.countByOwner(owner, "CANCELED"));
+        overview.put("totalNodes", nodeExecutionMapper.countByOwner(owner));
+        overview.put("pendingApprovals", approvalMapper.countPendingByOwner(owner));
         overview.put("activeSseSubscribers", sseBroadcaster.subscriberCount());
 
-        Long tokenInput = 0L;
-        Long tokenOutput = 0L;
-        for (AgentInvocation invocation : invocationMapper.selectList(null)) {
-            tokenInput += invocation.getTokenInput() == null ? 0L : invocation.getTokenInput();
-            tokenOutput += invocation.getTokenOutput() == null ? 0L : invocation.getTokenOutput();
-        }
-        overview.put("totalTokenInput", tokenInput);
-        overview.put("totalTokenOutput", tokenOutput);
+        AgentInvocationMapper.TokenSum tokens = invocationMapper.sumTokensByOwner(owner);
+        overview.put("totalTokenInput", tokens == null ? 0L : tokens.getTokenInput());
+        overview.put("totalTokenOutput", tokens == null ? 0L : tokens.getTokenOutput());
         return Result.success(overview);
-    }
-
-    private long countExecutions(String status) {
-        LambdaQueryWrapper<WorkflowExecution> query = new LambdaQueryWrapper<>();
-        if (status != null) {
-            query.eq(WorkflowExecution::getStatus, status);
-        }
-        return executionMapper.selectCount(query);
     }
 
     /**
@@ -73,12 +60,21 @@ public class MonitoringController {
      */
     @GetMapping("/nodes")
     public Result<Map<String, Object>> nodeStatistics() {
+        Long owner = owner();
         Map<String, Object> statistics = new LinkedHashMap<>();
-        for (NodeExecution node : nodeExecutionMapper.selectList(null)) {
+        for (NodeExecution node : nodeExecutionMapper.findStatesByOwner(owner)) {
             Object current = statistics.get(node.getStatus());
             long count = current instanceof Number number ? number.longValue() : 0L;
             statistics.put(node.getStatus(), count + 1);
         }
         return Result.success(statistics);
+    }
+
+    /**
+     * The owner of the statistics: the user of the request, or {@code null} for the
+     * administrator, who sees the numbers of everybody.
+     */
+    private Long owner() {
+        return CurrentUser.isAdmin() ? null : CurrentUser.requireId();
     }
 }
