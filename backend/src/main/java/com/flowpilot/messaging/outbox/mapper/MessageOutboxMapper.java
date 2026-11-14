@@ -93,7 +93,19 @@ public interface MessageOutboxMapper extends BaseMapper<MessageOutbox> {
             """)
     int reschedule(@Param("id") Long id, @Param("nextRetryAt") LocalDateTime nextRetryAt);
 
-    @Update("UPDATE message_outbox SET status = 'FAILED' WHERE id = #{id}")
+    /**
+     * Gives up on a row that cannot be published.
+     *
+     * <p>The update is conditional on the status, so a row that was recovered by another
+     * publisher in the meantime is not overwritten.
+     */
+    @Update("""
+            UPDATE message_outbox
+               SET status = 'FAILED',
+                   next_retry_at = NULL
+             WHERE id = #{id}
+               AND status = 'PUBLISHING'
+            """)
     int markFailed(@Param("id") Long id);
 
     /**

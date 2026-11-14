@@ -121,6 +121,33 @@ public interface NodeExecutionMapper extends BaseMapper<NodeExecution> {
     int markRetryReady(@Param("id") Long id);
 
     /**
+     * Releases a running agent node whose lease expired back into the ready state.
+     *
+     * <p>An agent node is not in the retry wait state when its worker dies: it is still in the
+     * running state, because the agent service owns it and not a Java worker. The recovery
+     * therefore needs its own transition. Without it the redispatch would find no node to
+     * take over and the agent node would stay in the running state for ever.
+     *
+     * <p>The attempt number is rolled back by one. The redispatch derives the attempt number
+     * from it, and only that way it finds the invocation of the interrupted attempt again: the
+     * agent therefore continues on the same thread and from the same checkpoint.
+     */
+    @Update("""
+            UPDATE node_execution
+               SET status = 'READY',
+                   current_attempt = #{attemptNo} - 1,
+                   worker_id = NULL,
+                   lease_expire_at = NULL,
+                   next_retry_at = NULL,
+                   version = version + 1,
+                   updated_at = CURRENT_TIMESTAMP(3)
+             WHERE id = #{id}
+               AND status = 'RUNNING'
+               AND current_attempt = #{attemptNo}
+            """)
+    int markAgentRecoveryReady(@Param("id") Long id, @Param("attemptNo") Integer attemptNo);
+
+    /**
      * Acquires the execution lease. The fencing token is incremented so a previous owner of the
      * lease can no longer commit a result.
      */
@@ -194,6 +221,9 @@ public interface NodeExecutionMapper extends BaseMapper<NodeExecution> {
      *
      * <p>The moment the node may be retried is stored with the state, so the delay survives a
      * restart and the scheduler can pick the node up exactly when it is due.
+     *
+     * <p>The worker of the failed attempt is cleared: the worker is done with the node, and the
+     * ready scanner only picks up the nodes that no worker owns.
      */
     @Update("""
             UPDATE node_execution
@@ -201,6 +231,7 @@ public interface NodeExecutionMapper extends BaseMapper<NodeExecution> {
                    error_code = #{errorCode},
                    error_message = #{errorMessage},
                    next_retry_at = #{nextRetryAt},
+                   worker_id = NULL,
                    lease_expire_at = NULL,
                    version = version + 1,
                    updated_at = CURRENT_TIMESTAMP(3)

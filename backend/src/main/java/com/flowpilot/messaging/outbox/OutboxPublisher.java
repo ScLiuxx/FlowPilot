@@ -52,6 +52,16 @@ public class OutboxPublisher {
     @Value("${flowpilot.messaging.outbox.publishing-timeout-seconds:300}")
     private long publishingTimeoutSeconds;
 
+    /**
+     * How often a message is published before it is given up.
+     *
+     * <p>Most failures are temporary: the broker is restarting or the connection is lost. A
+     * message that cannot be published at all — a malformed payload or a routing key without a
+     * queue — would be retried for ever without this limit.
+     */
+    @Value("${flowpilot.messaging.outbox.max-retries:10}")
+    private int maxRetries;
+
     @Scheduled(fixedDelayString = "${flowpilot.messaging.outbox.poll-interval-ms:500}")
     public void publishPending() {
         if (!enabled) {
@@ -83,6 +93,11 @@ public class OutboxPublisher {
             if (!confirm.isAck()) {
                 throw new IllegalStateException("the broker rejected the message: " + confirm.getReason());
             }
+            // The broker accepted the message but could not route it. The row must not be
+            // marked as published, because nobody will ever receive the message.
+            if (correlationData.getReturned() != null) {
+                throw new IllegalStateException("the message was returned: it has no matching queue");
+            }
 
             // The update is conditional on the status: if the row was recovered in the
             // meantime, the recovery must not be overwritten.
@@ -98,8 +113,21 @@ public class OutboxPublisher {
         }
     }
 
+    /**
+     * Returns a row to the pending state, or gives up on it.
+     *
+     * <p>A message that cannot be published is retried a bounded number of times. Without the
+     * limit a single poison message would be retried for ever and would keep the publisher
+     * busy.
+     */
     private void reschedule(MessageOutbox record) {
         int retry = record.getRetryCount() == null ? 0 : record.getRetryCount();
+        if (retry >= maxRetries) {
+            outboxMapper.markFailed(record.getId());
+            log.error("the outbox row {} failed after {} attempts, it is given up id={} routingKey={}",
+                    record.getId(), retry, record.getId(), record.getRoutingKey());
+            return;
+        }
         long delaySeconds = Math.min(60, 1L << Math.min(retry, 6));
         outboxMapper.reschedule(record.getId(), LocalDateTime.now().plusSeconds(delaySeconds));
     }
