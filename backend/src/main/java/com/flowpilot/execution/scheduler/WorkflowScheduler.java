@@ -411,11 +411,19 @@ public class WorkflowScheduler {
     @Transactional
     public void scheduleAgentRecovery(NodeExecution node, WorkflowNodeDefinition definition) {
         WorkflowExecution execution = executionService.get(node.getWorkflowExecutionId());
-        int updated = nodeExecutionMapper.markRetryReady(node.getId());
+        // An agent node is in the running state when its lease expires, not in the retry wait
+        // state: the agent service owns it, not a Java worker. The recovery therefore needs its
+        // own transition, otherwise the node would never be taken over again.
+        int attemptNo = node.getCurrentAttempt() == null ? 1 : node.getCurrentAttempt();
+        int updated = nodeExecutionMapper.markAgentRecoveryReady(node.getId(), attemptNo);
         if (updated != 1) {
             return;
         }
         node.setStatus(NodeStatus.READY.name());
+        // The dispatcher derives the attempt number from the node and looks for the invocation of
+        // that attempt. The rolled back number makes it find the invocation of the interrupted
+        // attempt again, so the agent continues on the same thread.
+        node.setCurrentAttempt(attemptNo - 1);
         agentNodeDispatcher.dispatch(node, definition, execution.getTraceId());
         log.info("agent node {} redispatched after a lease recovery", node.getNodeKey());
     }
@@ -485,6 +493,11 @@ public class WorkflowScheduler {
                 default -> anyInFlight = true;
             }
         }
+
+        // The counters are shown in the console while the workflow runs. They are refreshed
+        // here, because the execution row is already locked: the node rows are locked by the
+        // scheduler, and the other order would let two transactions wait for each other.
+        executionMapper.refreshNodeCounts(executionId);
 
         // A cancelled execution ends as cancelled, never as failed. The nodes that were still
         // running finish their current attempt first, so the cancellation is cooperative.

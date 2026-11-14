@@ -99,4 +99,28 @@ public interface WorkflowExecutionMapper extends BaseMapper<WorkflowExecution> {
             </script>
             """)
     long countByOwner(@Param("userId") Long userId, @Param("status") String status);
+
+    /**
+     * Recomputes the node counters of an execution.
+     *
+     * <p>The counters are the progress of the workflow. They are refreshed while the workflow
+     * runs, so the console shows how far it got and not only its final state.
+     *
+     * <p>The counters are derived from the states of the nodes, so they cannot drift away from
+     * the nodes they describe. The version is not touched: the counters carry no state of their
+     * own, and a state transition must not be rejected because of them.
+     */
+    @Update("""
+            UPDATE workflow_execution e
+               SET completed_node_count = (SELECT COUNT(*)
+                                             FROM node_execution n
+                                            WHERE n.workflow_execution_id = e.id
+                                              AND n.status IN ('SUCCEEDED', 'SKIPPED')),
+                   failed_node_count = (SELECT COUNT(*)
+                                          FROM node_execution n
+                                         WHERE n.workflow_execution_id = e.id
+                                           AND n.status = 'FAILED')
+             WHERE e.id = #{executionId}
+            """)
+    int refreshNodeCounts(@Param("executionId") Long executionId);
 }

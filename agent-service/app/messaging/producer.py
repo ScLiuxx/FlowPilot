@@ -53,7 +53,12 @@ class EventPublisher:
         if self._exchange is not None:
             return
         self._connection = await aio_pika.connect_robust(self._settings.rabbitmq_url)
-        channel = await self._connection.channel(publisher_confirms=True)
+        # on_return_raises makes an unroutable message an error instead of a
+        # silently dropped event: the result of an agent would never reach the
+        # backend, and the workflow would wait for it for ever.
+        channel = await self._connection.channel(
+            publisher_confirms=True, on_return_raises=True
+        )
         await channel.set_qos(prefetch_count=self._settings.rabbitmq_prefetch)
         self._exchange = await channel.declare_exchange(
             self._settings.rabbitmq_exchange,

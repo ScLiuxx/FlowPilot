@@ -24,18 +24,40 @@ def expected_thread_id(invocation_id: int) -> str:
 async def postgres_checkpointer(dsn: str) -> AsyncIterator[Any]:
     """Open a PostgreSQL checkpointer and make sure the schema exists."""
     from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
+    from psycopg.rows import dict_row
+    from psycopg_pool import AsyncConnectionPool
 
     from app.persistence.repository import SCHEMA_LOCK_KEY
 
-    async with AsyncPostgresSaver.from_conn_string(dsn) as saver:
+    # A pool is used instead of a single connection: a single connection is never
+    # re-established, so the agent service would stop working after the first
+    # database restart until the service itself is restarted.
+    #
+    # The connection settings are the ones the saver needs: the pipeline mode of the
+    # saver requires autocommit, and the schema uses concurrent index creation,
+    # which cannot run inside a transaction.
+    pool = AsyncConnectionPool(
+        dsn,
+        min_size=1,
+        max_size=5,
+        open=False,
+        kwargs={"autocommit": True, "prepare_threshold": 0, "row_factory": dict_row},
+    )
+    await pool.open(wait=True)
+    try:
         # The setup runs DDL, and several replicas start at the same time.
         # The advisory lock makes sure that only one of them creates the tables.
-        await saver.conn.execute("SELECT pg_advisory_lock(%s)", (SCHEMA_LOCK_KEY,))
-        try:
-            await saver.setup()
-        finally:
-            await saver.conn.execute("SELECT pg_advisory_unlock(%s)", (SCHEMA_LOCK_KEY,))
-        yield saver
+        # The lock has to be held by the very connection that runs the DDL, so the
+        # setup uses a single connection of the pool instead of the pool itself.
+        async with pool.connection() as conn:
+            await conn.execute("SELECT pg_advisory_lock(%s)", (SCHEMA_LOCK_KEY,))
+            try:
+                await AsyncPostgresSaver(conn=conn).setup()
+            finally:
+                await conn.execute("SELECT pg_advisory_unlock(%s)", (SCHEMA_LOCK_KEY,))
+        yield AsyncPostgresSaver(conn=pool)
+    finally:
+        await pool.close()
 
 
 def memory_checkpointer() -> Any:

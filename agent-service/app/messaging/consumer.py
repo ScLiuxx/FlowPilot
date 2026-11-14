@@ -50,8 +50,48 @@ logger = get_logger(__name__)
 SUPPORTED_SCHEMA_MAJOR = "1"
 
 
+def _database_error_types() -> tuple[type[BaseException], ...]:
+    """The database errors that are worth another attempt.
+
+    A connection to PostgreSQL that is lost is an infrastructure failure, but
+    ``psycopg`` does not derive its errors from ``OSError``, so they would
+    otherwise be dead lettered on the first hiccup of the database.
+    """
+    try:
+        import psycopg
+    except ImportError:  # pragma: no cover - psycopg is an optional dependency
+        return ()
+    return (psycopg.OperationalError, psycopg.InterfaceError)
+
+
+#: The database errors that are retried.
+_DatabaseError = _database_error_types()
+
+
 class ProtocolError(Exception):
     """The message does not conform to the protocol — dead letter it."""
+
+
+def _is_retryable(exc: BaseException) -> bool:
+    """Whether the failure is worth another delivery attempt.
+
+    Only the failures of the infrastructure are retried. A database that is
+    restarting or a connection that is lost does not say anything about the
+    work itself, so the command is put back into the queue. A business
+    failure fails again with every attempt.
+    """
+    if isinstance(
+        exc,
+        (
+            aio_pika.AMQPException,
+            ConnectionError,
+            TimeoutError,
+            OSError,
+            _DatabaseError,
+        ),
+    ):
+        return True
+    return False
 
 
 class AgentMessageConsumer:
@@ -216,7 +256,7 @@ class AgentMessageConsumer:
         """Requeue transient failures (bounded), dead letter everything else."""
         attempts = self._attempts.get(message_id, 0) + 1
         self._attempts[message_id] = attempts
-        retryable = isinstance(exc, (aio_pika.AMQPException, ConnectionError, TimeoutError, OSError))
+        retryable = _is_retryable(exc)
         logger.warning(
             "message handling failed",
             extra={

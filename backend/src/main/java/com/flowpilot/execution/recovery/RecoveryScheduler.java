@@ -134,8 +134,8 @@ public class RecoveryScheduler {
                 if (recoverAgentResult(current, execution)) {
                     return;
                 }
-                // The agent node keeps its invocation, so the redispatch continues from the checkpoint.
-                current.setCurrentAttempt(attemptNo - 1);
+                // The agent node keeps its invocation, so the redispatch continues from the
+                // checkpoint.
                 redispatchAgent(current, execution);
                 return;
             }
@@ -222,7 +222,6 @@ public class RecoveryScheduler {
             log.warn("cannot recover agent node {}, the definition is gone", node.getId());
             return;
         }
-        node.setCurrentAttempt((node.getCurrentAttempt() == null ? 1 : node.getCurrentAttempt()) - 1);
         scheduler.scheduleAgentRecovery(node, definition);
     }
 
