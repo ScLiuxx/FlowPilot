@@ -52,7 +52,10 @@ public class MessageEnvelope<T> {
                 .messageType(type.wireName())
                 .correlationId(com.flowpilot.common.trace.TraceContext.newCorrelationId())
                 .traceId(com.flowpilot.common.trace.TraceContext.currentTraceId())
-                .spanId(com.flowpilot.common.trace.TraceContext.currentSpanId())
+                // A message that is published outside a span carries no span id at all. An
+                // empty one would be rejected by the peer, so the message would be dropped
+                // and the node would wait for ever.
+                .spanId(com.flowpilot.common.trace.TraceContext.currentSpanIdOrNull())
                 .timestamp(Instant.now())
                 .producer("flowpilot-backend")
                 .payload(payload)
@@ -95,6 +98,11 @@ public class MessageEnvelope<T> {
         }
         if (traceId == null || !traceId.matches("^[0-9a-f]{32}$")) {
             throw new IllegalArgumentException("traceId must be 32 hex characters");
+        }
+        if (spanId != null && !spanId.matches("^[0-9a-f]{16}$")) {
+            // The schema allows a missing span id, but not a malformed one. An empty string
+            // would be rejected by the peer, so it must not leave the producer either.
+            throw new IllegalArgumentException("spanId must be 16 hex characters");
         }
         if (timestamp == null) {
             throw new IllegalArgumentException("timestamp is required");

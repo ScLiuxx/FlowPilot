@@ -277,10 +277,17 @@ cd frontend && npm install && npm run dev
 | 变量 | 说明 | 默认值 |
 |---|---|---|
 | `JWT_SECRET` | JWT 签名密钥，生产环境必须修改 | 开发默认值 |
-| `GITHUB_TOKEN` | 提升 GitHub API 速率限制 | 空 |
+| `GITHUB_TOKEN` | 提升 GitHub API 速率限制，匿名调用只有 60 次/小时 | 空 |
 | `LLM_API_KEY` | 模型密钥，为空时使用确定性本地模型 | 空 |
 | `MYSQL_HOST` / `REDIS_HOST` / `RABBITMQ_HOST` / `POSTGRES_HOST` | 基础设施地址 | localhost |
 | `GRAFANA_ADMIN_USER` / `GRAFANA_ADMIN_PASSWORD` | Grafana 管理员账号密码 | admin / flowpilot |
+
+`GITHUB_TOKEN` 不是可选优化。技术尽调工作流并行采集十余个仓库，未认证的 GitHub API 只有
+60 次/小时，一次运行就会触顶，节点会以 `GITHUB_RATE_LIMITED` 失败。配置 Token 后限额提升到
+5000 次/小时。
+
+`LLM_API_KEY` 为空时 Agent 服务使用确定性的本地模型：报告内容照常生成，Token 用量是按
+字符估算的**估算值而非真实计费**。控制台的「Token 用量」按模型拆分，可以据此区分。
 
 ---
 

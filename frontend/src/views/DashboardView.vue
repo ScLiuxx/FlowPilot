@@ -32,6 +32,14 @@ const totalTokens = computed(() => {
   return data.totalTokenInput + data.totalTokenOutput
 })
 
+/**
+ * Token 用量按模型拆分。
+ *
+ * 没有配置 LLM_API_KEY 时，Agent 服务用的是本地确定性模型，Token 是估算值而不是真实计费。
+ * 列出模型，管理员才知道这些数字是花了钱还是估算出来的。
+ */
+const tokenModels = computed(() => overview.value?.tokenModels ?? [])
+
 async function load(): Promise<void> {
   loading.value = true
   error.value = ''
@@ -160,6 +168,18 @@ onMounted(load)
                 />
               </div>
             </div>
+            <ul v-if="tokenModels.length" class="fp-dash__token-models">
+              <li
+                v-for="model in tokenModels"
+                :key="model.modelName"
+                class="fp-dash__token-model"
+              >
+                <span class="fp-mono">{{ model.modelName }}</span>
+                <span class="fp-muted">
+                  {{ formatNumber(model.tokenInput + model.tokenOutput) }} tokens
+                </span>
+              </li>
+            </ul>
           </div>
         </div>
 
@@ -269,6 +289,24 @@ onMounted(load)
   border-radius: var(--fp-pill);
   background: var(--fp-accent);
   transition: width 0.4s var(--ease);
+}
+
+/* Token 用量按模型拆分 */
+.fp-dash__token-models {
+  display: grid;
+  gap: var(--sp-1);
+  margin: var(--sp-3) 0 0;
+  padding: var(--sp-3) 0 0;
+  border-top: 1px solid var(--fp-border);
+  list-style: none;
+}
+
+.fp-dash__token-model {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-3);
+  font-size: 12px;
 }
 
 .fp-dash__token-fill--in {

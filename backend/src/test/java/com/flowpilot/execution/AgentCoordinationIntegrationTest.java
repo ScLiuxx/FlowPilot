@@ -20,7 +20,9 @@ import com.flowpilot.messaging.outbox.mapper.MessageOutboxMapper;
 import com.flowpilot.messaging.protocol.MessageEnvelope;
 import com.flowpilot.messaging.protocol.payloads.AgentCompletedPayload;
 import com.flowpilot.messaging.protocol.payloads.AgentExecutePayload;
+import com.flowpilot.messaging.protocol.payloads.AgentFailedPayload;
 import com.flowpilot.messaging.protocol.payloads.AgentInterruptedPayload;
+import com.flowpilot.workflow.definition.RetryPolicyDefinition;
 import com.flowpilot.workflow.definition.WorkflowDefinitionDocument;
 import com.flowpilot.workflow.definition.WorkflowNodeDefinition;
 import com.flowpilot.workflow.entity.WorkflowVersion;
@@ -230,6 +232,58 @@ class AgentCoordinationIntegrationTest {
         assertThat(events).anyMatch(event ->
                 "AGENT_INTERRUPTED".equals(event.getEventType())
                         && event.getEventData().contains("请审核分析结论"));
+    }
+
+    @Test
+    @DisplayName("a failed agent is retried with the retry policy of its node")
+    void aFailedAgentUsesTheRetryPolicyOfItsNode() {
+        Long userId = 9106L;
+        // The node declares three attempts. The agent path used to fall back
+        // to the default policy instead, so the node stopped earlier than its
+        // author configured.
+        WorkflowDefinitionDocument document = definition(
+                WorkflowNodeDefinition.builder()
+                        .id("analyze").type("AGENT")
+                        .config(Map.of("agentType", "REPOSITORY_ANALYST"))
+                        .dependencies(List.of())
+                        .retryPolicy(RetryPolicyDefinition.builder()
+                                .maxAttempts(3)
+                                .initialDelaySeconds(1)
+                                .maxDelaySeconds(10)
+                                .multiplier(2.0)
+                                .build())
+                        .build());
+
+        var workflow = workflowService.create("agent retry demo", null, "TEST", userId, document);
+        var version = workflowService.listVersionsInternal(workflow.getId()).get(0);
+        workflowService.publish(workflow.getId(), version.getId(), userId);
+        WorkflowVersion published = workflowService.getPublishedVersion(workflow.getId());
+
+        WorkflowExecution execution = executionService.start(published, document, userId, Map.of());
+        scheduler.onWorkflowStarted(execution.getId());
+
+        NodeExecution agentNode = agentNodeOf(execution.getId());
+        AgentInvocation invocation = invocationMapper.findByNodeExecutionId(agentNode.getId()).get(0);
+
+        // The agent reports a failure that may be retried.
+        AgentFailedPayload payload = AgentFailedPayload.builder()
+                .invocationId(invocation.getId())
+                .threadId(invocation.getThreadId())
+                .errorCode("GITHUB_RATE_LIMITED")
+                .errorCategory("RATE_LIMIT")
+                .errorMessage("GitHub API rate limit exceeded")
+                .retryable(true)
+                .build();
+
+        transactionTemplate.executeWithoutResult(status -> eventHandler.onFailed(payload));
+
+        // The node waits for its retry instead of failing right away.
+        NodeExecution waiting = nodeExecutionMapper.selectById(agentNode.getId());
+        assertThat(waiting.getStatus()).isEqualTo(NodeStatus.RETRY_WAIT.name());
+        assertThat(waiting.getErrorCode()).isEqualTo("GITHUB_RATE_LIMITED");
+        assertThat(waiting.getNextRetryAt())
+                .as("the retry must be scheduled")
+                .isNotNull();
     }
 
     private Long startAgentWorkflow(Long userId, String name) {

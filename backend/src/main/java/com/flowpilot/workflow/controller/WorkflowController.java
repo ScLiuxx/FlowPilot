@@ -5,6 +5,7 @@ import com.flowpilot.common.result.Result;
 import com.flowpilot.common.security.CurrentUser;
 import com.flowpilot.common.util.Ids;
 import com.flowpilot.common.util.JsonUtils;
+import com.flowpilot.common.util.Timestamps;
 import com.flowpilot.workflow.definition.WorkflowDefinitionDocument;
 import com.flowpilot.workflow.dto.WorkflowDtos;
 import com.flowpilot.workflow.entity.WorkflowDefinition;
@@ -136,8 +137,8 @@ public class WorkflowController {
                 .ownerId(Ids.of(definition.getOwnerId()))
                 .latestVersion(definition.getLatestVersion())
                 .status(definition.getStatus())
-                .createdAt(definition.getCreatedAt() == null ? null : definition.getCreatedAt().toString())
-                .updatedAt(definition.getUpdatedAt() == null ? null : definition.getUpdatedAt().toString())
+                .createdAt(Timestamps.toIso(definition.getCreatedAt()))
+                .updatedAt(Timestamps.toIso(definition.getUpdatedAt()))
                 .build();
     }
 
@@ -151,8 +152,8 @@ public class WorkflowController {
                 .definitionJson(version.getDefinitionJson())
                 .definition(parseDefinition(version.getDefinitionJson()))
                 .createdBy(Ids.of(version.getCreatedBy()))
-                .publishedAt(version.getPublishedAt() == null ? null : version.getPublishedAt().toString())
-                .createdAt(version.getCreatedAt() == null ? null : version.getCreatedAt().toString())
+                .publishedAt(Timestamps.toIso(version.getPublishedAt()))
+                .createdAt(Timestamps.toIso(version.getCreatedAt()))
                 .build();
     }
 

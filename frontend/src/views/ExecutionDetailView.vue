@@ -66,6 +66,36 @@ const pendingApproval = computed(
   () => relatedApprovals.value.find((item) => item.status === 'PENDING') ?? null
 )
 
+/**
+ * 待审批的内容。
+ *
+ * 审批请求里带着被审批的内容，审批人才能知道自己在批准什么。
+ * 两种来源：Agent 中断时带在 payload.analysis，HUMAN 节点带在 analysis。
+ */
+const approvalReview = computed<Array<{ label: string; text: string }>>(() => {
+  const data = pendingApproval.value?.requestData
+  if (!data || typeof data !== 'object') return []
+  const payload = (data as JsonObject).payload
+  const source =
+    payload && typeof payload === 'object'
+      ? ((payload as JsonObject).analysis as JsonObject | undefined)
+      : undefined
+  const analysis = (source ?? (data as JsonObject).analysis) as JsonObject | undefined
+  if (!analysis || typeof analysis !== 'object') return []
+
+  const labels: Record<string, string> = {
+    riskLevel: '风险等级',
+    architectureAnalysis: '技术架构分析',
+    maintenanceAnalysis: '维护状况分析',
+    riskAnalysis: '潜在风险分析',
+    recommendation: '结论建议',
+    conclusion: '结论'
+  }
+  return Object.entries(labels)
+    .filter(([key]) => typeof analysis[key] === 'string' && analysis[key])
+    .map(([key, label]) => ({ label, text: String(analysis[key]) }))
+})
+
 /** 执行输出：成功结束后由各节点的产出汇总而成 */
 const output = computed<JsonObject>(() => execution.value?.output ?? {})
 const outputNodeCount = computed(() => Object.keys(output.value).length)
@@ -395,6 +425,12 @@ onBeforeUnmount(() => {
               <p v-if="pendingApproval.description" class="fp-ed__approval-desc">
                 {{ pendingApproval.description }}
               </p>
+              <dl v-if="approvalReview.length" class="fp-ed__approval-review">
+                <div v-for="item in approvalReview" :key="item.label" class="fp-ed__approval-item">
+                  <dt>{{ item.label }}</dt>
+                  <dd>{{ item.text }}</dd>
+                </div>
+              </dl>
             </div>
             <div class="fp-ed__approval-actions">
               <el-button type="success" plain @click="decide(pendingApproval, 'APPROVED')">
@@ -795,6 +831,38 @@ onBeforeUnmount(() => {
   margin-top: 4px;
   font-size: 13px;
   color: var(--fp-text-muted);
+}
+
+/* 待审批的内容：审批人需要看到自己在批准什么 */
+.fp-ed__approval-review {
+  display: grid;
+  gap: var(--sp-2);
+  margin: var(--sp-3) 0 0;
+  padding: var(--sp-3);
+  border-radius: var(--fp-radius-sm);
+  background: var(--fp-surface-2);
+}
+
+.fp-ed__approval-item {
+  display: grid;
+  grid-template-columns: 96px 1fr;
+  gap: var(--sp-3);
+  align-items: start;
+}
+
+.fp-ed__approval-item dt {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--fp-text-subtle);
+}
+
+.fp-ed__approval-item dd {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--fp-text);
+  white-space: pre-wrap;
+  word-break: break-word;
 }
 
 .fp-ed__approval-actions {

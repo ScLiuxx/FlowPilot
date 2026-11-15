@@ -85,4 +85,7 @@ async def test_the_counters_are_stored_in_the_record(executor, store):
         "llmCalls": 1,
         "toolCalls": 7,
         "toolFailures": 0,
+        # The model is reported with the usage, so the console can tell a real model
+        # apart from the offline simulation.
+        "modelName": "flowpilot-fake-chat-model",
     }

@@ -35,5 +35,13 @@ public class AgentCompletedPayload {
         private Long toolCalls;
         /** The number of tool calls that failed. */
         private Long toolFailures;
+        /**
+         * The model that produced the tokens.
+         *
+         * <p>Without a key the agent service falls back to its deterministic offline model, which
+         * estimates the tokens instead of billing them. The name tells the console which of the
+         * two happened.
+         */
+        private String modelName;
     }
 }

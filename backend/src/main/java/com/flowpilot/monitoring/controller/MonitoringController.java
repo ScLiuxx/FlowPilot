@@ -13,7 +13,9 @@ import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 
 /**
@@ -52,6 +54,18 @@ public class MonitoringController {
         AgentInvocationMapper.TokenSum tokens = invocationMapper.sumTokensByOwner(owner);
         overview.put("totalTokenInput", tokens == null ? 0L : tokens.getTokenInput());
         overview.put("totalTokenOutput", tokens == null ? 0L : tokens.getTokenOutput());
+
+        // The tokens per model, so the console can show whether the numbers were billed or
+        // estimated by the offline model.
+        List<Map<String, Object>> tokenModels = new ArrayList<>();
+        for (AgentInvocationMapper.ModelTokenSum model : invocationMapper.sumTokensByModelByOwner(owner)) {
+            Map<String, Object> entry = new LinkedHashMap<>();
+            entry.put("modelName", model.getModelName());
+            entry.put("tokenInput", model.getTokenInput());
+            entry.put("tokenOutput", model.getTokenOutput());
+            tokenModels.add(entry);
+        }
+        overview.put("tokenModels", tokenModels);
         return Result.success(overview);
     }
 

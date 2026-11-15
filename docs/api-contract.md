@@ -39,6 +39,14 @@ precision.
 The message protocol is not affected: the identifiers inside the AMQP envelopes stay integers,
 because the protocol schema defines them as `integer/int64`.
 
+## Timestamps
+
+Every timestamp is an **ISO-8601 instant in UTC** with millisecond precision, for example
+`2026-11-11T10:00:00.000Z`. The offset is part of the value: a browser reads a timestamp
+without an offset as local time, so the console would show an execution eight hours in the past
+and a running duration that is eight hours too long until the execution ends and both ends
+shift alike.
+
 ## Authentication
 
 All endpoints except `POST /api/v1/auth/register`, `POST /api/v1/auth/login` and
@@ -273,7 +281,7 @@ Response `data`:
       "durationMs": 12,
       "status": "OK",
       "attributes": { "phase": "start" },
-      "startedAt": "2026-11-11T10:00:00.123"
+      "startedAt": "2026-11-11T10:00:00.123Z"
     }
   ]
 }

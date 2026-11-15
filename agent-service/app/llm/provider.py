@@ -121,6 +121,11 @@ class OpenAICompatibleChatModel:
         self._client = client
         self._owns_client = client is None
 
+    @property
+    def model_name(self) -> str:
+        """The name of the model, as the provider calls it."""
+        return self.model
+
     async def _get_client(self):
         if self._client is None:
             import httpx

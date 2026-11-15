@@ -9,6 +9,7 @@ import com.flowpilot.execution.mapper.NodeExecutionMapper;
 import com.flowpilot.execution.model.EventType;
 import com.flowpilot.execution.service.ExecutionEventService;
 import com.flowpilot.execution.service.NodeResultService;
+import com.flowpilot.execution.service.NodeRetryPolicyResolver;
 import com.flowpilot.messaging.protocol.payloads.AgentCompletedPayload;
 import com.flowpilot.messaging.protocol.payloads.AgentFailedPayload;
 import com.flowpilot.messaging.protocol.payloads.AgentInterruptedPayload;
@@ -35,6 +36,7 @@ public class AgentEventHandler {
     private final AgentInvocationMapper invocationMapper;
     private final NodeExecutionMapper nodeExecutionMapper;
     private final NodeResultService nodeResultService;
+    private final NodeRetryPolicyResolver retryPolicyResolver;
     private final ApprovalService approvalService;
     private final ExecutionEventService eventService;
     private final FlowPilotMetrics metrics;
@@ -68,6 +70,9 @@ public class AgentEventHandler {
                     ? 0L : payload.getUsage().getInputTokens());
             invocation.setTokenOutput(payload.getUsage().getOutputTokens() == null
                     ? 0L : payload.getUsage().getOutputTokens());
+            // The model that produced the tokens. Without it the console cannot tell a real
+            // model apart from the offline simulation.
+            invocation.setModelName(payload.getUsage().getModelName());
             // The number of model and tool calls is reported by the agent service. The
             // architecture design asks for it, because only the caller knows how many calls
             // an invocation really needed.
@@ -128,9 +133,12 @@ public class AgentEventHandler {
         invocationMapper.updateById(invocation);
 
         boolean retryable = payload.getRetryable() == null || payload.getRetryable();
+        // The policy of the node decides whether and when it is retried. Without it the default
+        // policy would be used, so a node that was declared with a budget of two attempts would
+        // silently get a different one.
         nodeResultService.fail(node.getId(), invocation.getAttemptNo(), node.getLeaseToken(),
                 payload.getErrorCode(), payload.getErrorMessage(),
-                payload.getErrorCategory(), retryable, null);
+                payload.getErrorCategory(), retryable, retryPolicyResolver.resolve(node));
 
         eventService.append(invocation.getWorkflowExecutionId(), node.getId(), EventType.AGENT_FAILED,
                 Map.of("invocationId", invocation.getId(),

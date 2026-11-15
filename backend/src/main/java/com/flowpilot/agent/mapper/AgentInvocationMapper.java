@@ -40,6 +40,62 @@ public interface AgentInvocationMapper extends BaseMapper<AgentInvocation> {
     TokenSum sumTokensByOwner(@Param("userId") Long userId);
 
     /**
+     * The tokens of the invocations of one user, grouped by the model that produced them.
+     *
+     * <p>Without a key the agent service falls back to its offline model, which estimates the
+     * tokens instead of billing them. The breakdown tells the console which of the two happened.
+     */
+    @Select("""
+            <script>
+            SELECT COALESCE(i.model_name, 'unknown') AS model_name,
+                   COALESCE(SUM(i.token_input), 0) AS token_input,
+                   COALESCE(SUM(i.token_output), 0) AS token_output
+              FROM agent_invocation i
+              JOIN workflow_execution e ON e.id = i.workflow_execution_id
+             WHERE 1 = 1
+               <if test="userId != null">
+                 AND e.user_id = #{userId}
+               </if>
+             GROUP BY COALESCE(i.model_name, 'unknown')
+             ORDER BY COALESCE(i.model_name, 'unknown')
+            </script>
+            """)
+    List<ModelTokenSum> sumTokensByModelByOwner(@Param("userId") Long userId);
+
+    /**
+     * The tokens of one model.
+     */
+    class ModelTokenSum {
+        private String modelName;
+        private Long tokenInput;
+        private Long tokenOutput;
+
+        public String getModelName() {
+            return modelName;
+        }
+
+        public void setModelName(String modelName) {
+            this.modelName = modelName;
+        }
+
+        public Long getTokenInput() {
+            return tokenInput;
+        }
+
+        public void setTokenInput(Long tokenInput) {
+            this.tokenInput = tokenInput;
+        }
+
+        public Long getTokenOutput() {
+            return tokenOutput;
+        }
+
+        public void setTokenOutput(Long tokenOutput) {
+            this.tokenOutput = tokenOutput;
+        }
+    }
+
+    /**
      * The sum of the tokens of a group of invocations.
      */
     class TokenSum {

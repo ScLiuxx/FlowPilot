@@ -24,6 +24,7 @@ PRODUCER = "flowpilot-agent-service"
 
 _VERSION_PATTERN = re.compile(r"^\d+\.\d+$")
 _TRACE_ID_PATTERN = re.compile(r"^[0-9a-f]{32}$")
+_SPAN_ID_PATTERN = re.compile(r"^[0-9a-f]{16}$")
 
 #: Routing keys used by the agent service.
 ROUTING_AGENT_EXECUTE = "agent.execute"
@@ -107,6 +108,9 @@ class TokenUsage(BaseModel):
     llmCalls: int = 0
     toolCalls: int = 0
     toolFailures: int = 0
+    #: The model that produced the tokens. Without it the console cannot tell whether the
+    #: numbers came from a real model or from the offline simulation.
+    modelName: str | None = None
 
     @property
     def total(self) -> int:
@@ -152,6 +156,17 @@ class MessageEnvelope(BaseModel):
     def _check_trace_id(cls, value: str) -> str:
         if not _TRACE_ID_PATTERN.match(value):
             raise ValueError("traceId must be 32 lower case hex characters")
+        return value
+
+    @field_validator("spanId")
+    @classmethod
+    def _check_span_id(cls, value: str | None) -> str | None:
+        # A missing span id is legal: the consumer derives one from the message id.
+        # A malformed one is not, and it would be rejected by the schema anyway.
+        if value is None:
+            return None
+        if not _SPAN_ID_PATTERN.match(value):
+            raise ValueError("spanId must be 16 lower case hex characters")
         return value
 
     @field_validator("timestamp")

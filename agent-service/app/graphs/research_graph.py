@@ -250,9 +250,32 @@ def interrupt_review(
                 "invocationId": context.invocation_id,
                 "threadId": context.thread_id,
                 "riskLevel": analysis.get("riskLevel"),
+                # The reviewer has to see what they approve, so the analysis travels
+                # with the request instead of only its risk level.
+                "analysis": _reviewable_analysis(analysis),
             },
         }
     )
+
+
+#: The analysis fields a reviewer needs in order to decide.
+_REVIEW_FIELDS = (
+    "riskLevel",
+    "architectureAnalysis",
+    "maintenanceAnalysis",
+    "riskAnalysis",
+    "recommendation",
+    "conclusion",
+)
+
+
+def _reviewable_analysis(analysis: dict[str, Any]) -> dict[str, Any]:
+    """The analysis as it is shown to the reviewer."""
+    return {
+        key: str(analysis[key])
+        for key in _REVIEW_FIELDS
+        if analysis.get(key)
+    }
 
 
 async def report_node(state: AgentState, runtime: Runtime) -> dict[str, Any]:

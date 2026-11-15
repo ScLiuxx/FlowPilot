@@ -5,6 +5,7 @@ import com.flowpilot.common.result.Result;
 import com.flowpilot.common.security.CurrentUser;
 import com.flowpilot.common.util.Ids;
 import com.flowpilot.common.util.JsonUtils;
+import com.flowpilot.common.util.Timestamps;
 import com.flowpilot.execution.entity.WorkflowExecution;
 import com.flowpilot.execution.mapper.WorkflowExecutionMapper;
 import com.flowpilot.report.entity.AnalysisReport;
@@ -106,10 +107,8 @@ public class ReportController {
         response.put("status", report.getStatus());
         response.put("summary", report.getSummary());
         response.put("contentHash", report.getContentHash());
-        response.put("generatedAt", report.getGeneratedAt() == null
-                ? null : report.getGeneratedAt().toString());
-        response.put("createdAt", report.getCreatedAt() == null
-                ? null : report.getCreatedAt().toString());
+        response.put("generatedAt", Timestamps.toIso(report.getGeneratedAt()));
+        response.put("createdAt", Timestamps.toIso(report.getCreatedAt()));
         return response;
     }
 }

@@ -10,6 +10,7 @@ import com.flowpilot.common.security.CurrentUser;
 import com.flowpilot.common.trace.mapper.TraceSpanMapper;
 import com.flowpilot.common.util.Ids;
 import com.flowpilot.common.util.JsonUtils;
+import com.flowpilot.common.util.Timestamps;
 import com.flowpilot.execution.dto.ExecutionDtos;
 import com.flowpilot.execution.entity.ExecutionEvent;
 import com.flowpilot.execution.entity.NodeExecution;
@@ -203,8 +204,7 @@ public class ExecutionController {
                     item.put("durationMs", span.getDurationMs());
                     item.put("status", span.getStatus());
                     item.put("attributes", JsonUtils.toMap(span.getAttributes()));
-                    item.put("startedAt", span.getStartedAt() == null
-                            ? null : span.getStartedAt().toString());
+                    item.put("startedAt", Timestamps.toIso(span.getStartedAt()));
                     return item;
                 })
                 .toList();
@@ -263,9 +263,9 @@ public class ExecutionController {
                 .failedNodes(execution.getFailedNodeCount())
                 .errorCode(execution.getErrorCode())
                 .errorMessage(execution.getErrorMessage())
-                .startedAt(execution.getStartedAt() == null ? null : execution.getStartedAt().toString())
-                .finishedAt(execution.getFinishedAt() == null ? null : execution.getFinishedAt().toString())
-                .createdAt(execution.getCreatedAt() == null ? null : execution.getCreatedAt().toString())
+                .startedAt(Timestamps.toIso(execution.getStartedAt()))
+                .finishedAt(Timestamps.toIso(execution.getFinishedAt()))
+                .createdAt(Timestamps.toIso(execution.getCreatedAt()))
                 .build();
     }
 
@@ -282,8 +282,8 @@ public class ExecutionController {
                 .attempt(node.getCurrentAttempt())
                 .maxAttempts(node.getMaxAttempts())
                 .workerId(node.getWorkerId())
-                .startedAt(node.getStartedAt() == null ? null : node.getStartedAt().toString())
-                .finishedAt(node.getFinishedAt() == null ? null : node.getFinishedAt().toString())
+                .startedAt(Timestamps.toIso(node.getStartedAt()))
+                .finishedAt(Timestamps.toIso(node.getFinishedAt()))
                 .durationMs(duration)
                 .errorCode(node.getErrorCode())
                 .errorMessage(node.getErrorMessage())
@@ -297,8 +297,8 @@ public class ExecutionController {
                 .workerId(attempt.getWorkerId())
                 .errorCode(attempt.getErrorCode())
                 .errorMessage(attempt.getErrorMessage())
-                .startedAt(attempt.getStartedAt() == null ? null : attempt.getStartedAt().toString())
-                .finishedAt(attempt.getFinishedAt() == null ? null : attempt.getFinishedAt().toString())
+                .startedAt(Timestamps.toIso(attempt.getStartedAt()))
+                .finishedAt(Timestamps.toIso(attempt.getFinishedAt()))
                 .durationMs(attempt.getDurationMs())
                 .build();
     }
@@ -309,7 +309,7 @@ public class ExecutionController {
                 .eventType(event.getEventType())
                 .nodeExecutionId(Ids.of(event.getNodeExecutionId()))
                 .eventData(JsonUtils.toMap(event.getEventData()))
-                .createdAt(event.getCreatedAt() == null ? null : event.getCreatedAt().toString())
+                .createdAt(Timestamps.toIso(event.getCreatedAt()))
                 .build();
     }
 }

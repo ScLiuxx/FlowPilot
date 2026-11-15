@@ -7,6 +7,8 @@ import org.springframework.boot.context.properties.ConfigurationPropertiesScan;
 import org.springframework.scheduling.annotation.EnableAsync;
 import org.springframework.scheduling.annotation.EnableScheduling;
 
+import java.util.TimeZone;
+
 /**
  * FlowPilot backend entry point.
  *
@@ -23,6 +25,10 @@ import org.springframework.scheduling.annotation.EnableScheduling;
 public class FlowPilotApplication {
 
     public static void main(String[] args) {
+        // The database stores UTC and the JDBC connection asks for UTC, so the wall clock of the
+        // JVM has to be UTC as well. Otherwise the timestamps written from Java and the ones
+        // written by SQL would disagree by the offset of the host.
+        TimeZone.setDefault(TimeZone.getTimeZone("UTC"));
         SpringApplication.run(FlowPilotApplication.class, args);
     }
 }

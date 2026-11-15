@@ -366,4 +366,12 @@ export interface MonitoringOverview {
   totalNodes: number
   totalTokenInput: number
   totalTokenOutput: number
+  tokenModels?: TokenModelUsage[]
+}
+
+/** 一个模型的 Token 用量 */
+export interface TokenModelUsage {
+  modelName: string
+  tokenInput: number
+  tokenOutput: number
 }

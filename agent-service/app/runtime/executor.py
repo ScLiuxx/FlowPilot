@@ -860,6 +860,9 @@ class AgentExecutor:
             "llmCalls": _counter(state, "llmCalls", context.counters.llm_calls),
             "toolCalls": _counter(state, "toolCalls", context.counters.tool_calls),
             "toolFailures": context.counters.tool_failures,
+            # The model that produced the numbers. Without it the console cannot tell a real
+            # model apart from the offline simulation, which estimates the tokens.
+            "modelName": getattr(context.llm, "model_name", None),
         }
         result_payload = dict(state.get("analysis") or {})
         result_payload["repository"] = state.get("repository")

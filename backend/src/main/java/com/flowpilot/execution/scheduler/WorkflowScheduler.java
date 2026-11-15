@@ -246,7 +246,15 @@ public class WorkflowScheduler {
             return;
         }
         node.setStatus(NodeStatus.READY.name());
-        publishNodeExecute(node, definition, execution, buildNodeInput(execution, definition));
+        // The retry runs on a scheduler thread, so there is no span to continue. Without one the
+        // message would carry no span id at all, and the agent service would start a new trace
+        // instead of continuing the trace of the execution.
+        try (TracingService.TracedSpan span = tracingService.start("workflow.scheduler",
+                execution.getTraceId(), "", execution.getId(), node.getId(),
+                Map.of("phase", "retry", "nodeKey", node.getNodeKey()))) {
+            span.makeCurrent();
+            publishNodeExecute(node, definition, execution, buildNodeInput(execution, definition));
+        }
     }
 
     /**
@@ -424,7 +432,14 @@ public class WorkflowScheduler {
         // that attempt. The rolled back number makes it find the invocation of the interrupted
         // attempt again, so the agent continues on the same thread.
         node.setCurrentAttempt(attemptNo - 1);
-        agentNodeDispatcher.dispatch(node, definition, execution.getTraceId());
+        // The recovery runs on a scanner thread, so there is no span to continue. The message
+        // would otherwise carry no span id and the agent would start a new trace.
+        try (TracingService.TracedSpan span = tracingService.start("workflow.scheduler",
+                execution.getTraceId(), "", execution.getId(), node.getId(),
+                Map.of("phase", "recovery", "nodeKey", node.getNodeKey()))) {
+            span.makeCurrent();
+            agentNodeDispatcher.dispatch(node, definition, execution.getTraceId());
+        }
         log.info("agent node {} redispatched after a lease recovery", node.getNodeKey());
     }
 
@@ -453,7 +468,13 @@ public class WorkflowScheduler {
             // Another scanner or a worker got the node first.
             return;
         }
-        publishNodeExecute(node, definition, execution, buildNodeInput(execution, definition));
+        // The reschedule runs on a scanner thread, so there is no span to continue.
+        try (TracingService.TracedSpan span = tracingService.start("workflow.scheduler",
+                execution.getTraceId(), "", execution.getId(), node.getId(),
+                Map.of("phase", "reschedule", "nodeKey", node.getNodeKey()))) {
+            span.makeCurrent();
+            publishNodeExecute(node, definition, execution, buildNodeInput(execution, definition));
+        }
     }
 
     /**

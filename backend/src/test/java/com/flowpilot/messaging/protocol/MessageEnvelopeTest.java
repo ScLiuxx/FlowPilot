@@ -37,6 +37,48 @@ class MessageEnvelopeTest {
     }
 
     @Test
+    @DisplayName("an envelope created without a span carries no span id")
+    void createsEnvelopeWithoutSpan() {
+        // A message that is published outside a span — the retry scheduler does
+        // that — must not carry an empty span id: the schema only accepts a
+        // missing span id or one of sixteen hex characters, and the agent
+        // service rejects everything else. Such a message was silently dropped
+        // and the node waited for ever.
+        MessageEnvelope<AgentExecutePayload> envelope = MessageEnvelope.create(
+                MessageType.AGENT_EXECUTE,
+                AgentExecutePayload.builder()
+                        .agentType("REPOSITORY_ANALYST")
+                        .threadId("flowpilot-1")
+                        .invocationId(1L)
+                        .build());
+        envelope.setWorkflowExecutionId(100L);
+
+        assertThat(envelope.getSpanId())
+                .as("the span id must be absent, never empty")
+                .satisfiesAnyOf(
+                        spanId -> assertThat(spanId).isNull(),
+                        spanId -> assertThat(spanId).matches("^[0-9a-f]{16}$"));
+        envelope.validate();
+    }
+
+    @Test
+    @DisplayName("rejects a span id that the peer would not accept")
+    void rejectsMalformedSpanId() {
+        MessageEnvelope<AgentExecutePayload> envelope = MessageEnvelope.create(
+                MessageType.AGENT_EXECUTE,
+                AgentExecutePayload.builder().build());
+        envelope.setWorkflowExecutionId(100L);
+
+        envelope.setSpanId("");
+        assertThatThrownBy(envelope::validate)
+                .isInstanceOf(IllegalArgumentException.class);
+
+        envelope.setSpanId("not-a-span");
+        assertThatThrownBy(envelope::validate)
+                .isInstanceOf(IllegalArgumentException.class);
+    }
+
+    @Test
     @DisplayName("maps the message types onto the names used on the wire")
     void mapsWireNames() {
         assertThat(MessageType.WORKFLOW_STARTED.wireName()).isEqualTo("WorkflowStarted");

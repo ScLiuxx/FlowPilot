@@ -49,6 +49,27 @@ def test_an_invalid_trace_id_is_rejected():
         _envelope(traceId="not-a-trace-id")
 
 
+def test_a_missing_span_id_is_accepted():
+    # A producer that publishes outside a span sends no span id. The consumer
+    # derives one from the message id.
+    envelope = _envelope()
+    assert envelope.spanId is None
+
+
+def test_a_malformed_span_id_is_rejected():
+    # The backend used to send an empty span id, which the shared schema
+    # rejects. The message was dead lettered and the node waited for ever.
+    with pytest.raises(Exception):
+        _envelope(spanId="")
+    with pytest.raises(Exception):
+        _envelope(spanId="not-a-span")
+
+
+def test_a_well_formed_span_id_is_accepted():
+    envelope = _envelope(spanId="a1b2c3d4e5f60718")
+    assert envelope.spanId == "a1b2c3d4e5f60718"
+
+
 def test_an_invalid_schema_version_is_rejected():
     with pytest.raises(Exception):
         _envelope(schemaVersion="one.zero")

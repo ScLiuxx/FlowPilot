@@ -6,6 +6,7 @@ import com.flowpilot.common.result.PageResult;
 import com.flowpilot.common.result.Result;
 import com.flowpilot.common.security.CurrentUser;
 import com.flowpilot.common.util.Ids;
+import com.flowpilot.common.util.Timestamps;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.NotBlank;
 import lombok.AllArgsConstructor;
@@ -75,12 +76,9 @@ public class ApprovalController {
         response.put("requestData", com.flowpilot.common.util.JsonUtils.toMap(approval.getRequestData()));
         response.put("decisionData", approval.getDecisionData() == null
                 ? null : com.flowpilot.common.util.JsonUtils.toMap(approval.getDecisionData()));
-        response.put("requestedAt", approval.getRequestedAt() == null
-                ? null : approval.getRequestedAt().toString());
-        response.put("decidedAt", approval.getDecidedAt() == null
-                ? null : approval.getDecidedAt().toString());
-        response.put("expireAt", approval.getExpireAt() == null
-                ? null : approval.getExpireAt().toString());
+        response.put("requestedAt", Timestamps.toIso(approval.getRequestedAt()));
+        response.put("decidedAt", Timestamps.toIso(approval.getDecidedAt()));
+        response.put("expireAt", Timestamps.toIso(approval.getExpireAt()));
         response.put("timeoutAction", approval.getTimeoutAction());
         response.put("approverId", Ids.of(approval.getApproverId()));
         response.put("comment", approval.getComment());

@@ -16,7 +16,8 @@
         "outputTokens": { "type": "integer", "format": "int64" },
         "llmCalls": { "type": ["integer", "null"], "format": "int64" },
         "toolCalls": { "type": ["integer", "null"], "format": "int64" },
-        "toolFailures": { "type": ["integer", "null"], "format": "int64" }
+        "toolFailures": { "type": ["integer", "null"], "format": "int64" },
+        "modelName": { "type": ["string", "null"] }
       }
     }
   }

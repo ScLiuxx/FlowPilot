@@ -2,6 +2,7 @@ package com.flowpilot.monitoring.sse;
 
 import com.flowpilot.common.util.Ids;
 import com.flowpilot.common.util.JsonUtils;
+import com.flowpilot.common.util.Timestamps;
 import com.flowpilot.execution.entity.ExecutionEvent;
 import com.flowpilot.execution.mapper.ExecutionEventMapper;
 import com.flowpilot.execution.service.ExecutionEventService;
@@ -155,8 +156,8 @@ public class SseEventBroadcaster {
         payload.put("eventType", event.getEventType());
         payload.put("nodeExecutionId", Ids.of(event.getNodeExecutionId()));
         payload.put("eventData", JsonUtils.toMap(event.getEventData()));
-        payload.put("createdAt", event.getCreatedAt() == null
-                ? LocalDateTime.now().toString() : event.getCreatedAt().toString());
+        payload.put("createdAt", Timestamps.toIso(
+                event.getCreatedAt() == null ? LocalDateTime.now() : event.getCreatedAt()));
         return payload;
     }
 

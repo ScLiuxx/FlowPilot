@@ -153,17 +153,33 @@ class GitHubTool:
             ) from exc
         return self._handle_response(response)
 
+    def _rate_limit_message(self) -> str:
+        """The message of a rate limit error.
+
+        The unauthenticated GitHub API allows 60 requests per hour, which a
+        workflow with a dozen of collectors exhausts in a single run. The
+        message therefore names the token that lifts the limit, so the
+        operator does not have to guess.
+        """
+        if self._token:
+            return "GitHub API rate limit exceeded"
+        return (
+            "GitHub API rate limit exceeded. The requests are unauthenticated, "
+            "which GitHub limits to 60 per hour. Set GITHUB_TOKEN to raise the limit."
+        )
+
     def _handle_response(self, response: Any) -> Any:
         status = response.status_code
         headers = {k.lower(): v for k, v in response.headers.items()}
 
         if status == 429:
             raise RateLimitError(
-                "GitHub API rate limit exceeded",
+                self._rate_limit_message(),
                 error_code="GITHUB_RATE_LIMITED",
                 diagnostics={
                     "retryAfter": headers.get("retry-after"),
                     "limit": headers.get("x-ratelimit-limit"),
+                    "authenticated": bool(self._token),
                 },
             )
         if status in (301, 302, 307, 308):
@@ -181,9 +197,12 @@ class GitHubTool:
             remaining = headers.get("x-ratelimit-remaining")
             if remaining == "0" or "retry-after" in headers:
                 raise RateLimitError(
-                    "GitHub API rate limit exceeded",
+                    self._rate_limit_message(),
                     error_code="GITHUB_RATE_LIMITED",
-                    diagnostics={"retryAfter": headers.get("retry-after")},
+                    diagnostics={
+                        "retryAfter": headers.get("retry-after"),
+                        "authenticated": bool(self._token),
+                    },
                 )
             raise PermissionError_(
                 "GitHub API denied the request",

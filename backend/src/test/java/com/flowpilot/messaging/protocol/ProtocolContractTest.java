@@ -179,6 +179,35 @@ class ProtocolContractTest {
     }
 
     @Test
+    @DisplayName("an envelope as the producer builds it conforms to the shared schema")
+    void producedEnvelopeConformsToSchema() {
+        // The envelope is not patched after the producer built it. A message
+        // that the producer sends outside a span used to carry an empty span
+        // id, which the peer rejected, so the message was dropped and the
+        // node waited for ever. The schema is the contract, so the producer
+        // has to satisfy it on its own.
+        JsonSchema envelopeSchema = schema("common/envelope.schema.json");
+
+        MessageEnvelope<?> envelope = MessageEnvelope.create(
+                MessageType.AGENT_EXECUTE,
+                AgentExecutePayload.builder()
+                        .agentType("REPOSITORY_ANALYST")
+                        .threadId("flowpilot-30001")
+                        .invocationId(30001L)
+                        .build());
+        envelope.setWorkflowExecutionId(10001L);
+        envelope.setNodeExecutionId(20001L);
+        envelope.setAttemptNo(1);
+        envelope.setInvocationId(30001L);
+
+        String json = JsonUtils.toJson(envelope);
+        Set<ValidationMessage> violations = envelopeSchema.validate(readTree(json));
+        assertThat(violations)
+                .as("violations of a produced envelope: %s", json)
+                .isEmpty();
+    }
+
+    @Test
     @DisplayName("the thread id is derived from the invocation id, so a resume keeps the thread")
     void threadIdIsDerivedFromInvocation() {
         String threadId = AgentExecutePayload.threadIdFor(30001L);
