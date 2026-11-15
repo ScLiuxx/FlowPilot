@@ -1,0 +1,25 @@
+#!/usr/bin/env bash
+# Rejects a commit that would carry the identity of the IDE.
+#
+# The IDE injects GIT_COMMITTER_NAME / GIT_COMMITTER_EMAIL into the shell of the
+# agent, and the environment variables take precedence over `git config user.*`.
+# A plain `git commit` is therefore stamped with the identity of the IDE, which
+# ends up in the history of the repository.
+#
+# The hook cannot change the identity of the running git process, but it can
+# stop the commit. The commit is made with scripts/git-commit-as.sh, which sets
+# the identity before git starts.
+set -euo pipefail
+
+EXPECTED_NAME=$(git config user.name || true)
+EXPECTED_EMAIL=$(git config user.email || true)
+
+COMMITTER_NAME=${GIT_COMMITTER_NAME:-$(git config user.name || true)}
+COMMITTER_EMAIL=${GIT_COMMITTER_EMAIL:-$(git config user.email || true)}
+
+if [ -n "$EXPECTED_EMAIL" ] && [ "$COMMITTER_EMAIL" != "$EXPECTED_EMAIL" ]; then
+    echo "refusing to commit with the committer '$COMMITTER_NAME <$COMMITTER_EMAIL>'." >&2
+    echo "the repository expects '$EXPECTED_NAME <$EXPECTED_EMAIL>'." >&2
+    echo "use scripts/git-commit-as.sh -m \"message\" to commit with the right identity." >&2
+    exit 1
+fi
