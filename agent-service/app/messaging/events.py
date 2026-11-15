@@ -263,6 +263,9 @@ class InterruptData(BaseModel):
     description: str | None = None
     requestedAction: str | None = None
     payload: dict[str, Any] = Field(default_factory=dict)
+    #: The content of the decision the reviewer is asked to approve: the summary,
+    #: the risk level and the body of every section.
+    report: dict[str, Any] | None = None
 
 
 class AgentInterruptedPayload(BaseModel):

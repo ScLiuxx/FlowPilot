@@ -56,6 +56,29 @@ async def test_the_graph_interrupts_and_waits_for_a_human(executor, store):
     assert record.checkpoint_id == outcome.payload["checkpointId"]
 
 
+async def test_the_approval_carries_the_content_of_the_decision(executor, store):
+    """The reviewer has to see what they approve.
+
+    The approval request used to carry the title of the report only, so the
+    reviewer had to approve a decision they could not read.
+    """
+    envelope = _review_envelope()
+    outcome = await executor.execute(
+        envelope, AgentExecutePayload.model_validate(envelope.payload)
+    )
+
+    report = outcome.payload["interruptData"]["report"]
+    assert report["summary"]
+    assert report["riskLevel"] == "LOW"
+    assert [section["title"] for section in report["sections"]] == [
+        "Architecture Analysis",
+        "Maintenance Analysis",
+        "Risk Analysis",
+        "Recommendation",
+    ]
+    assert report["sections"][0]["content"] == "layered"
+
+
 async def test_the_resume_continues_on_the_same_thread(executor, store, checkpointer):
     envelope = _review_envelope()
     await executor.execute(

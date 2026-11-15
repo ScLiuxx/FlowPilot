@@ -31,5 +31,12 @@ public class AgentInterruptedPayload {
         private String description;
         private String requestedAction;
         private Map<String, Object> payload;
+        /**
+         * The content of the decision the reviewer is asked to approve.
+         *
+         * <p>The summary, the risk level and the body of every section. Without it the reviewer
+         * would have to approve a decision they cannot read.
+         */
+        private Map<String, Object> report;
     }
 }

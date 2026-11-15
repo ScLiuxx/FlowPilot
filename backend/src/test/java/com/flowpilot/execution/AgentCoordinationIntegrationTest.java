@@ -35,6 +35,7 @@ import org.springframework.test.context.ActiveProfiles;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.transaction.support.TransactionTemplate;
 
+import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Map;
 
@@ -284,6 +285,103 @@ class AgentCoordinationIntegrationTest {
         assertThat(waiting.getNextRetryAt())
                 .as("the retry must be scheduled")
                 .isNotNull();
+    }
+
+    @Test
+    @DisplayName("a rate limited agent waits for the moment the quota is available again")
+    void aRateLimitedAgentWaitsForTheQuota() {
+        Long userId = 9107L;
+        WorkflowDefinitionDocument document = definition(
+                WorkflowNodeDefinition.builder()
+                        .id("analyze").type("AGENT")
+                        .config(Map.of("agentType", "REPOSITORY_ANALYST"))
+                        .dependencies(List.of())
+                        .retryPolicy(RetryPolicyDefinition.builder()
+                                .maxAttempts(3)
+                                .initialDelaySeconds(1)
+                                .maxDelaySeconds(10)
+                                .multiplier(2.0)
+                                .build())
+                        .build());
+
+        var workflow = workflowService.create("rate limit demo", null, "TEST", userId, document);
+        var version = workflowService.listVersionsInternal(workflow.getId()).get(0);
+        workflowService.publish(workflow.getId(), version.getId(), userId);
+        WorkflowVersion published = workflowService.getPublishedVersion(workflow.getId());
+
+        WorkflowExecution execution = executionService.start(published, document, userId, Map.of());
+        scheduler.onWorkflowStarted(execution.getId());
+
+        NodeExecution agentNode = agentNodeOf(execution.getId());
+        AgentInvocation invocation = invocationMapper.findByNodeExecutionId(agentNode.getId()).get(0);
+
+        // GitHub says the quota is available again in fifteen minutes. The
+        // backoff of the policy is only two seconds, so without the suggestion
+        // the node would call GitHub again long before the limit is gone.
+        AgentFailedPayload payload = AgentFailedPayload.builder()
+                .invocationId(invocation.getId())
+                .threadId(invocation.getThreadId())
+                .errorCode("GITHUB_RATE_LIMITED")
+                .errorCategory("RATE_LIMIT")
+                .errorMessage("GitHub API rate limit exceeded")
+                .retryable(true)
+                .diagnostics(Map.of("waitSeconds", 900L))
+                .build();
+
+        transactionTemplate.executeWithoutResult(status -> eventHandler.onFailed(payload));
+
+        NodeExecution waiting = nodeExecutionMapper.selectById(agentNode.getId());
+        assertThat(waiting.getStatus()).isEqualTo(NodeStatus.RETRY_WAIT.name());
+        assertThat(waiting.getNextRetryAt())
+                .as("the retry must wait for the moment the quota is available again")
+                .isAfter(LocalDateTime.now().plusMinutes(14));
+    }
+
+    @Test
+    @DisplayName("a rate limited agent waits at most an hour")
+    void aRateLimitedAgentWaitsAtMostAnHour() {
+        Long userId = 9108L;
+        WorkflowDefinitionDocument document = definition(
+                WorkflowNodeDefinition.builder()
+                        .id("analyze").type("AGENT")
+                        .config(Map.of("agentType", "REPOSITORY_ANALYST"))
+                        .dependencies(List.of())
+                        .retryPolicy(RetryPolicyDefinition.builder()
+                                .maxAttempts(3)
+                                .initialDelaySeconds(1)
+                                .maxDelaySeconds(10)
+                                .multiplier(2.0)
+                                .build())
+                        .build());
+
+        var workflow = workflowService.create("rate limit cap demo", null, "TEST", userId, document);
+        var version = workflowService.listVersionsInternal(workflow.getId()).get(0);
+        workflowService.publish(workflow.getId(), version.getId(), userId);
+        WorkflowVersion published = workflowService.getPublishedVersion(workflow.getId());
+
+        WorkflowExecution execution = executionService.start(published, document, userId, Map.of());
+        scheduler.onWorkflowStarted(execution.getId());
+
+        NodeExecution agentNode = agentNodeOf(execution.getId());
+        AgentInvocation invocation = invocationMapper.findByNodeExecutionId(agentNode.getId()).get(0);
+
+        // A stale or wrong header must not postpone the workflow for ever.
+        AgentFailedPayload payload = AgentFailedPayload.builder()
+                .invocationId(invocation.getId())
+                .threadId(invocation.getThreadId())
+                .errorCode("GITHUB_RATE_LIMITED")
+                .errorCategory("RATE_LIMIT")
+                .errorMessage("GitHub API rate limit exceeded")
+                .retryable(true)
+                .diagnostics(Map.of("waitSeconds", 86400L))
+                .build();
+
+        transactionTemplate.executeWithoutResult(status -> eventHandler.onFailed(payload));
+
+        NodeExecution waiting = nodeExecutionMapper.selectById(agentNode.getId());
+        assertThat(waiting.getNextRetryAt())
+                .as("the wait is capped at an hour")
+                .isBefore(LocalDateTime.now().plusMinutes(61));
     }
 
     private Long startAgentWorkflow(Long userId, String name) {

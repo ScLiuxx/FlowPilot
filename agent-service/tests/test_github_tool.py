@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import time
+
 import httpx
 import pytest
 
@@ -104,6 +106,56 @@ async def test_rate_limited_responses_raise_the_rate_limit_category(status):
         await tool.get_repository("acme/widget")
     assert excinfo.value.category.value == "RATE_LIMIT"
     assert excinfo.value.retryable is True
+
+
+async def test_a_rate_limit_names_the_moment_the_quota_is_available_again():
+    """The backend has to know when it may call GitHub again.
+
+    The ``x-ratelimit-reset`` header carries the moment as a unix
+    timestamp. Without it the backend would retry in seconds and run into
+    the limit again, burning an attempt of the node.
+    """
+    reset = int(time.time()) + 900
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            403,
+            json={"message": "API rate limit exceeded"},
+            headers={"x-ratelimit-remaining": "0", "x-ratelimit-reset": str(reset)},
+        )
+
+    tool = _tool(handler)
+    with pytest.raises(RateLimitError) as excinfo:
+        await tool.get_repository("acme/widget")
+
+    diagnostics = excinfo.value.diagnostics
+    assert diagnostics is not None
+    assert diagnostics["waitSeconds"] == 900
+    assert diagnostics["reset"] == str(reset)
+
+
+async def test_the_retry_after_header_names_the_wait():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            429, json={"message": "rate limited"}, headers={"retry-after": "120"}
+        )
+
+    tool = _tool(handler)
+    with pytest.raises(RateLimitError) as excinfo:
+        await tool.get_repository("acme/widget")
+
+    assert excinfo.value.diagnostics["waitSeconds"] == 120
+
+
+async def test_a_rate_limit_without_a_reset_carries_no_wait():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(429, json={"message": "rate limited"})
+
+    tool = _tool(handler)
+    with pytest.raises(RateLimitError) as excinfo:
+        await tool.get_repository("acme/widget")
+
+    assert "waitSeconds" not in excinfo.value.diagnostics
 
 
 async def test_a_forbidden_response_with_an_exhausted_quota_is_a_rate_limit():

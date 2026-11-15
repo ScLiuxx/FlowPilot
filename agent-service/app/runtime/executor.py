@@ -926,6 +926,7 @@ class AgentExecutor:
                 description=value.get("description"),
                 requestedAction=value.get("requestedAction"),
                 payload=value.get("payload") or {},
+                report=value.get("report"),
             ),
         )
         logger.info("agent interrupted, waiting for human approval", extra={"checkpointId": checkpoint_id})

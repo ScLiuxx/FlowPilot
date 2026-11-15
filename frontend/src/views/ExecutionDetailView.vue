@@ -69,32 +69,58 @@ const pendingApproval = computed(
 /**
  * 待审批的内容。
  *
- * 审批请求里带着被审批的内容，审批人才能知道自己在批准什么。
- * 两种来源：Agent 中断时带在 payload.analysis，HUMAN 节点带在 analysis。
+ * 审批请求里带着被审批的报告，审批人才能知道自己在批准什么。
+ * 两种来源：Agent 中断时带在 report，HUMAN 节点带在 report。
  */
-const approvalReview = computed<Array<{ label: string; text: string }>>(() => {
-  const data = pendingApproval.value?.requestData
-  if (!data || typeof data !== 'object') return []
-  const payload = (data as JsonObject).payload
-  const source =
-    payload && typeof payload === 'object'
-      ? ((payload as JsonObject).analysis as JsonObject | undefined)
-      : undefined
-  const analysis = (source ?? (data as JsonObject).analysis) as JsonObject | undefined
-  if (!analysis || typeof analysis !== 'object') return []
+interface ApprovalReportSection {
+  title: string
+  content: string
+}
 
-  const labels: Record<string, string> = {
-    riskLevel: '风险等级',
-    architectureAnalysis: '技术架构分析',
-    maintenanceAnalysis: '维护状况分析',
-    riskAnalysis: '潜在风险分析',
-    recommendation: '结论建议',
-    conclusion: '结论'
+interface ApprovalReport {
+  title: string
+  summary: string
+  riskLevel: string
+  sections: ApprovalReportSection[]
+}
+
+const approvalReport = computed<ApprovalReport | null>(() => {
+  const data = pendingApproval.value?.requestData
+  if (!data || typeof data !== 'object') return null
+  const root = data as JsonObject
+  const payload =
+    root.payload && typeof root.payload === 'object' ? (root.payload as JsonObject) : undefined
+  const source = (root.report ?? payload?.report) as JsonObject | undefined
+  if (!source || typeof source !== 'object') return null
+
+  const sections: ApprovalReportSection[] = Array.isArray(source.sections)
+    ? source.sections
+        .filter((item): item is JsonObject => !!item && typeof item === 'object')
+        .map((item) => ({
+          title: typeof item.title === 'string' ? item.title : '',
+          content: typeof item.content === 'string' ? item.content : ''
+        }))
+        .filter((item) => item.content)
+    : []
+  const summary = typeof source.summary === 'string' ? source.summary : ''
+  const riskLevel = typeof source.riskLevel === 'string' ? source.riskLevel : ''
+  if (!sections.length && !summary && !riskLevel) return null
+
+  return {
+    title: typeof source.title === 'string' ? source.title : '',
+    summary,
+    riskLevel,
+    sections
   }
-  return Object.entries(labels)
-    .filter(([key]) => typeof analysis[key] === 'string' && analysis[key])
-    .map(([key, label]) => ({ label, text: String(analysis[key]) }))
 })
+
+/** 风险等级 → 标签类型 */
+function riskTagType(riskLevel: string): 'success' | 'warning' | 'danger' {
+  const level = riskLevel.toUpperCase()
+  if (level === 'HIGH') return 'danger'
+  if (level === 'MEDIUM') return 'warning'
+  return 'success'
+}
 
 /** 执行输出：成功结束后由各节点的产出汇总而成 */
 const output = computed<JsonObject>(() => execution.value?.output ?? {})
@@ -425,12 +451,28 @@ onBeforeUnmount(() => {
               <p v-if="pendingApproval.description" class="fp-ed__approval-desc">
                 {{ pendingApproval.description }}
               </p>
-              <dl v-if="approvalReview.length" class="fp-ed__approval-review">
-                <div v-for="item in approvalReview" :key="item.label" class="fp-ed__approval-item">
-                  <dt>{{ item.label }}</dt>
-                  <dd>{{ item.text }}</dd>
+              <div v-if="approvalReport" class="fp-ed__approval-report">
+                <div class="fp-ed__approval-report-head">
+                  <span class="fp-label">待审批报告</span>
+                  <el-tag v-if="approvalReport.riskLevel" size="small" :type="riskTagType(approvalReport.riskLevel)">
+                    风险等级 {{ approvalReport.riskLevel }}
+                  </el-tag>
                 </div>
-              </dl>
+                <div v-if="approvalReport.title" class="fp-ed__approval-report-title">
+                  {{ approvalReport.title }}
+                </div>
+                <p v-if="approvalReport.summary" class="fp-ed__approval-report-summary">
+                  {{ approvalReport.summary }}
+                </p>
+                <section
+                  v-for="section in approvalReport.sections"
+                  :key="section.title"
+                  class="fp-ed__approval-report-section"
+                >
+                  <h4 class="fp-ed__approval-report-section-title">{{ section.title }}</h4>
+                  <p class="fp-ed__approval-report-section-content">{{ section.content }}</p>
+                </section>
+              </div>
             </div>
             <div class="fp-ed__approval-actions">
               <el-button type="success" plain @click="decide(pendingApproval, 'APPROVED')">
@@ -833,30 +875,51 @@ onBeforeUnmount(() => {
   color: var(--fp-text-muted);
 }
 
-/* 待审批的内容：审批人需要看到自己在批准什么 */
-.fp-ed__approval-review {
+/* 待审批的报告：审批人需要看到自己在批准什么 */
+.fp-ed__approval-report {
   display: grid;
   gap: var(--sp-2);
-  margin: var(--sp-3) 0 0;
+  margin-top: var(--sp-3);
   padding: var(--sp-3);
+  border: 1px solid var(--fp-border);
   border-radius: var(--fp-radius-sm);
-  background: var(--fp-surface-2);
+  background: var(--fp-surface);
 }
 
-.fp-ed__approval-item {
-  display: grid;
-  grid-template-columns: 96px 1fr;
+.fp-ed__approval-report-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
   gap: var(--sp-3);
-  align-items: start;
 }
 
-.fp-ed__approval-item dt {
+.fp-ed__approval-report-title {
+  font-size: 13.5px;
+  font-weight: 600;
+}
+
+.fp-ed__approval-report-summary {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--fp-text);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.fp-ed__approval-report-section {
+  padding-top: var(--sp-2);
+  border-top: 1px solid var(--fp-border);
+}
+
+.fp-ed__approval-report-section-title {
+  margin: 0 0 var(--sp-1);
   font-size: 12px;
   font-weight: 600;
   color: var(--fp-text-subtle);
 }
 
-.fp-ed__approval-item dd {
+.fp-ed__approval-report-section-content {
   margin: 0;
   font-size: 13px;
   line-height: 1.6;

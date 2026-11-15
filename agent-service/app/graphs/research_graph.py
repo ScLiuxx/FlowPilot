@@ -21,7 +21,7 @@ from app.runtime.context import AgentExecutionContext
 from app.runtime.errors import ValidationError
 from app.runtime.state import AgentState
 from app.tools.github_tool import normalize_repository_ref
-from app.tools.report_tool import build_report
+from app.tools.report_tool import build_report, review_payload
 from app.tools.untrusted import untrusted_block
 
 AGENT_TYPE_REPOSITORY_ANALYST = "REPOSITORY_ANALYST"
@@ -222,7 +222,11 @@ async def review_node(state: AgentState, runtime: Runtime) -> dict[str, Any]:
     decision = interrupt_review(
         context,
         review_id=review_id,
-        analysis=analysis,
+        report=build_report(
+            repository=str(state.get("repository") or "unknown/unknown"),
+            analysis=analysis,
+            facts=state.get("facts") if isinstance(state.get("facts"), dict) else {},
+        ),
     )
     approved = bool((decision or {}).get("approved"))
     return {
@@ -235,7 +239,7 @@ async def review_node(state: AgentState, runtime: Runtime) -> dict[str, Any]:
 
 
 def interrupt_review(
-    context: AgentExecutionContext, *, review_id: str, analysis: dict[str, Any]
+    context: AgentExecutionContext, *, review_id: str, report: dict[str, Any]
 ) -> Any:
     """Raise the LangGraph interrupt that asks for a human decision."""
     from langgraph.types import interrupt
@@ -249,33 +253,12 @@ def interrupt_review(
             "payload": {
                 "invocationId": context.invocation_id,
                 "threadId": context.thread_id,
-                "riskLevel": analysis.get("riskLevel"),
-                # The reviewer has to see what they approve, so the analysis travels
-                # with the request instead of only its risk level.
-                "analysis": _reviewable_analysis(analysis),
             },
+            # The reviewer has to see what they approve, so the report travels
+            # with the request instead of only its risk level.
+            "report": review_payload(report),
         }
     )
-
-
-#: The analysis fields a reviewer needs in order to decide.
-_REVIEW_FIELDS = (
-    "riskLevel",
-    "architectureAnalysis",
-    "maintenanceAnalysis",
-    "riskAnalysis",
-    "recommendation",
-    "conclusion",
-)
-
-
-def _reviewable_analysis(analysis: dict[str, Any]) -> dict[str, Any]:
-    """The analysis as it is shown to the reviewer."""
-    return {
-        key: str(analysis[key])
-        for key in _REVIEW_FIELDS
-        if analysis.get(key)
-    }
 
 
 async def report_node(state: AgentState, runtime: Runtime) -> dict[str, Any]:

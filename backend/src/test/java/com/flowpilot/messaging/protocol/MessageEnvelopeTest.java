@@ -55,9 +55,7 @@ class MessageEnvelopeTest {
 
         assertThat(envelope.getSpanId())
                 .as("the span id must be absent, never empty")
-                .satisfiesAnyOf(
-                        spanId -> assertThat(spanId).isNull(),
-                        spanId -> assertThat(spanId).matches("^[0-9a-f]{16}$"));
+                .isNull();
         envelope.validate();
     }
 

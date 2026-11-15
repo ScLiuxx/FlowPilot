@@ -33,6 +33,9 @@ import java.util.Map;
 @RequiredArgsConstructor
 public class AgentEventHandler {
 
+    /** The longest a retry is postponed because an upstream asked for it. */
+    private static final long MAX_SUGGESTED_DELAY_SECONDS = 3600L;
+
     private final AgentInvocationMapper invocationMapper;
     private final NodeExecutionMapper nodeExecutionMapper;
     private final NodeResultService nodeResultService;
@@ -138,12 +141,36 @@ public class AgentEventHandler {
         // silently get a different one.
         nodeResultService.fail(node.getId(), invocation.getAttemptNo(), node.getLeaseToken(),
                 payload.getErrorCode(), payload.getErrorMessage(),
-                payload.getErrorCategory(), retryable, retryPolicyResolver.resolve(node));
+                payload.getErrorCategory(), retryable, retryPolicyResolver.resolve(node),
+                suggestedDelay(payload.getDiagnostics()));
 
         eventService.append(invocation.getWorkflowExecutionId(), node.getId(), EventType.AGENT_FAILED,
                 Map.of("invocationId", invocation.getId(),
                         "errorCode", payload.getErrorCode(),
                         "errorCategory", payload.getErrorCategory()), null);
+    }
+
+    /**
+     * The wait the upstream asked for, e.g. the moment its rate limit resets.
+     *
+     * <p>An upstream that names the moment it is available again must not be called before it.
+     * The wait is capped, so a stale or wrong header cannot postpone a workflow for ever.
+     *
+     * @return the delay, or {@code null} when the upstream did not ask for one
+     */
+    private Duration suggestedDelay(Map<String, Object> diagnostics) {
+        if (diagnostics == null) {
+            return null;
+        }
+        Object waitSeconds = diagnostics.get("waitSeconds");
+        if (!(waitSeconds instanceof Number number)) {
+            return null;
+        }
+        long seconds = number.longValue();
+        if (seconds <= 0) {
+            return null;
+        }
+        return Duration.ofSeconds(Math.min(seconds, MAX_SUGGESTED_DELAY_SECONDS));
     }
 
     /**
@@ -188,6 +215,11 @@ public class AgentEventHandler {
             interruptData.put("requestedAction", payload.getInterruptData().getRequestedAction());
             if (payload.getInterruptData().getPayload() != null) {
                 interruptData.put("payload", payload.getInterruptData().getPayload());
+            }
+            // The content of the decision travels with the request, so the reviewer can read
+            // what they are asked to approve.
+            if (payload.getInterruptData().getReport() != null) {
+                interruptData.put("report", payload.getInterruptData().getReport());
             }
         }
         interruptData.put("invocationId", invocation.getId());

@@ -15,7 +15,27 @@
         "title": { "type": "string" },
         "description": { "type": "string" },
         "requestedAction": { "type": "string" },
-        "payload": { "type": "object" }
+        "payload": { "type": "object" },
+        "report": {
+          "type": ["object", "null"],
+          "description": "The content of the decision the reviewer is asked to approve.",
+          "properties": {
+            "title": { "type": ["string", "null"] },
+            "summary": { "type": ["string", "null"] },
+            "riskLevel": { "type": ["string", "null"] },
+            "sections": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "key": { "type": ["string", "null"] },
+                  "title": { "type": ["string", "null"] },
+                  "content": { "type": ["string", "null"] }
+                }
+              }
+            }
+          }
+        }
       }
     }
   }

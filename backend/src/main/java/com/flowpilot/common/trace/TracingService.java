@@ -72,7 +72,7 @@ public class TracingService {
         // The trace of the thread is restored when the span ends, so a span that runs inside a
         // request does not leak its trace into the work that follows it.
         String previousTraceId = TraceContext.currentTraceIdOrNull();
-        String previousSpanId = TraceContext.currentSpanIdOrNull();
+        String previousSpanId = TraceContext.currentSpanId();
         TraceContext.setTraceId(effectiveTraceId);
         TraceContext.setSpanId(spanId);
         // The start of the span is a wall clock time. The monotonic clock is only used for the

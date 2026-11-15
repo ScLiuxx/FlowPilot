@@ -150,6 +150,11 @@ public interface NodeExecutionMapper extends BaseMapper<NodeExecution> {
     /**
      * Acquires the execution lease. The fencing token is incremented so a previous owner of the
      * lease can no longer commit a result.
+     *
+     * <p>The start of the node is written again with every lease. A retry is a new attempt and
+     * therefore a new cycle: the console shows the duration of the attempt that runs, not the
+     * sum of all attempts and the waiting time between them. The duration of the earlier attempts
+     * stays in the attempt history.
      */
     @Update("""
             UPDATE node_execution
@@ -159,7 +164,7 @@ public interface NodeExecutionMapper extends BaseMapper<NodeExecution> {
                    lease_expire_at = #{leaseExpireAt},
                    heartbeat_at = CURRENT_TIMESTAMP(3),
                    current_attempt = #{attemptNo},
-                   started_at = COALESCE(started_at, CURRENT_TIMESTAMP(3)),
+                   started_at = CURRENT_TIMESTAMP(3),
                    version = version + 1,
                    updated_at = CURRENT_TIMESTAMP(3)
              WHERE id = #{id}

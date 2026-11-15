@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from app.messaging.events import AgentExecutePayload
 from app.tools.dependency_tool import analyze_dependencies
-from app.tools.report_tool import build_report, render_markdown
+from app.tools.report_tool import build_report, render_markdown, review_payload
 from tests.conftest import make_execute_envelope
 
 
@@ -93,3 +93,35 @@ async def test_the_dependency_analyst_agent_runs(executor):
     report = outcome.payload["result"]["report"]
     assert report["reportType"] == "DEPENDENCY_RISK"
     assert outcome.payload["usage"]["outputTokens"] > 0
+
+
+def test_the_review_payload_carries_the_content_of_the_decision():
+    """The approval request has to show what the reviewer approves.
+
+    The rendered markdown repeats the sections, so it is left out of the
+    request: the reviewer reads the summary and the sections.
+    """
+    report = build_report(
+        repository="acme/widget",
+        analysis={
+            "architectureAnalysis": "layered",
+            "maintenanceAnalysis": "active",
+            "riskAnalysis": "low",
+            "recommendation": "continue",
+            "riskLevel": "LOW",
+        },
+    )
+
+    payload = review_payload(report)
+
+    assert payload["title"] == report["title"]
+    assert payload["summary"] == report["summary"]
+    assert payload["riskLevel"] == "LOW"
+    assert [section["title"] for section in payload["sections"]] == [
+        "Architecture Analysis",
+        "Maintenance Analysis",
+        "Risk Analysis",
+        "Recommendation",
+    ]
+    assert payload["sections"][0]["content"] == "layered"
+    assert "markdown" not in payload

@@ -32,7 +32,7 @@ from langgraph.types import interrupt
 
 from app.runtime.context import AgentExecutionContext
 from app.runtime.state import AgentState
-from app.tools.report_tool import build_report
+from app.tools.report_tool import build_report, review_payload
 
 AGENT_TYPE_REPORT_REVIEWER = "REPORT_REVIEWER"
 
@@ -91,8 +91,10 @@ async def approval_node(state: AgentState, runtime: Runtime) -> dict[str, Any]:
             "payload": {
                 "invocationId": context.invocation_id,
                 "threadId": context.thread_id,
-                "reportTitle": report.get("title"),
             },
+            # The reviewer has to see what they approve, so the report travels
+            # with the request instead of only its title.
+            "report": review_payload(report),
         }
     )
     payload = decision if isinstance(decision, dict) else {}

@@ -55,7 +55,7 @@ public class MessageEnvelope<T> {
                 // A message that is published outside a span carries no span id at all. An
                 // empty one would be rejected by the peer, so the message would be dropped
                 // and the node would wait for ever.
-                .spanId(com.flowpilot.common.trace.TraceContext.currentSpanIdOrNull())
+                .spanId(com.flowpilot.common.trace.TraceContext.currentSpanId())
                 .timestamp(Instant.now())
                 .producer("flowpilot-backend")
                 .payload(payload)

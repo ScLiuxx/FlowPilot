@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import base64
 import re
+import time
 from typing import Any, Awaitable, Callable
 
 from opentelemetry.trace import Status, StatusCode
@@ -168,6 +169,44 @@ class GitHubTool:
             "which GitHub limits to 60 per hour. Set GITHUB_TOKEN to raise the limit."
         )
 
+    def _rate_limit_diagnostics(self, headers: dict[str, str]) -> dict[str, Any]:
+        """The diagnostics of a rate limited response.
+
+        GitHub tells the client when the quota becomes available again: the
+        ``x-ratelimit-reset`` header carries that moment as a unix timestamp
+        and ``retry-after`` carries it as a number of seconds. The number of
+        seconds the caller has to wait is therefore known, and the backend can
+        postpone the retry instead of running into the limit again.
+        """
+        diagnostics: dict[str, Any] = {
+            "limit": headers.get("x-ratelimit-limit"),
+            "remaining": headers.get("x-ratelimit-remaining"),
+            "reset": headers.get("x-ratelimit-reset"),
+            "retryAfter": headers.get("retry-after"),
+            "authenticated": bool(self._token),
+        }
+        wait_seconds = self._wait_seconds(headers)
+        if wait_seconds is not None:
+            diagnostics["waitSeconds"] = wait_seconds
+        return diagnostics
+
+    @staticmethod
+    def _wait_seconds(headers: dict[str, str]) -> int | None:
+        """The seconds until the quota is available again."""
+        retry_after = headers.get("retry-after")
+        if retry_after:
+            try:
+                return max(0, int(float(retry_after)))
+            except ValueError:
+                pass
+        reset = headers.get("x-ratelimit-reset")
+        if reset:
+            try:
+                return max(0, int(float(reset)) - int(time.time()))
+            except ValueError:
+                pass
+        return None
+
     def _handle_response(self, response: Any) -> Any:
         status = response.status_code
         headers = {k.lower(): v for k, v in response.headers.items()}
@@ -176,11 +215,7 @@ class GitHubTool:
             raise RateLimitError(
                 self._rate_limit_message(),
                 error_code="GITHUB_RATE_LIMITED",
-                diagnostics={
-                    "retryAfter": headers.get("retry-after"),
-                    "limit": headers.get("x-ratelimit-limit"),
-                    "authenticated": bool(self._token),
-                },
+                diagnostics=self._rate_limit_diagnostics(headers),
             )
         if status in (301, 302, 307, 308):
             # Redirects are never followed: the location could point anywhere.
@@ -199,10 +234,7 @@ class GitHubTool:
                 raise RateLimitError(
                     self._rate_limit_message(),
                     error_code="GITHUB_RATE_LIMITED",
-                    diagnostics={
-                        "retryAfter": headers.get("retry-after"),
-                        "authenticated": bool(self._token),
-                    },
+                    diagnostics=self._rate_limit_diagnostics(headers),
                 )
             raise PermissionError_(
                 "GitHub API denied the request",

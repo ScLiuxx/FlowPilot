@@ -94,7 +94,7 @@
         "maxToolCalls": 20,
         "timeoutSeconds": 300
       },
-      "retryPolicy": { "maxAttempts": 4, "initialDelaySeconds": 10, "maxDelaySeconds": 120, "multiplier": 2.0 },
+      "retryPolicy": { "maxAttempts": 5, "initialDelaySeconds": 15, "maxDelaySeconds": 300, "multiplier": 2.0 },
       "timeoutPolicy": { "timeoutSeconds": 300 }
     },
     {

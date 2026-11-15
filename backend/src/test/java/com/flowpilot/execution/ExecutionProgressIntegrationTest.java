@@ -146,6 +146,37 @@ class ExecutionProgressIntegrationTest {
         assertThat(commands).isEqualTo(2);
     }
 
+    @Test
+    @DisplayName("a retry starts a new cycle: the start of the node is written again")
+    void aRetryStartsANewCycle() {
+        Long executionId = startWorkflow(9705L, "retry cycle demo");
+        NodeExecution first = nodeOf(executionId, "first");
+
+        // The first attempt runs and fails.
+        transactionTemplate.executeWithoutResult(status -> nodeExecutionMapper.acquireLease(
+                first.getId(), "worker-test", 1, 0, LocalDateTime.now().plusMinutes(5)));
+        NodeExecution leased = nodeExecutionMapper.selectById(first.getId());
+        LocalDateTime firstStart = leased.getStartedAt();
+        assertThat(firstStart).isNotNull();
+
+        // The node waits for its retry and is released again.
+        transactionTemplate.executeWithoutResult(status -> nodeExecutionMapper.markRetryWait(
+                first.getId(), 1, leased.getLeaseToken(), "FAILED", "the worker died",
+                LocalDateTime.now()));
+        transactionTemplate.executeWithoutResult(status -> nodeExecutionMapper.markRetryReady(first.getId()));
+        transactionTemplate.executeWithoutResult(status -> nodeExecutionMapper.acquireLease(
+                first.getId(), "worker-test", 2, 1, LocalDateTime.now().plusMinutes(5)));
+
+        // The second attempt is a new cycle, so the node starts again. Without
+        // that the console showed the duration of the first attempt plus the
+        // waiting time between the two, while the closed duration was right.
+        NodeExecution retried = nodeExecutionMapper.selectById(first.getId());
+        assertThat(retried.getStartedAt())
+                .as("the retry starts a new cycle")
+                .isAfter(firstStart);
+        assertThat(retried.getCurrentAttempt()).isEqualTo(2);
+    }
+
     private Long startWorkflow(Long userId, String name) {
         WorkflowDefinitionDocument document = WorkflowDefinitionDocument.builder()
                 .name("test")

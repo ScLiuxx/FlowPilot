@@ -72,6 +72,32 @@ def build_report(
     return report
 
 
+def review_payload(report: dict[str, Any]) -> dict[str, Any]:
+    """The report as a reviewer sees it.
+
+    The approval request carries the content of the decision: the summary, the
+    risk level and the body of every section. The rendered markdown is left
+    out, because it repeats the same text.
+    """
+    sections: list[dict[str, Any]] = []
+    for section in report.get("sections") or []:
+        if not isinstance(section, dict):
+            continue
+        sections.append(
+            {
+                "key": section.get("key"),
+                "title": section.get("title"),
+                "content": section.get("content"),
+            }
+        )
+    return {
+        "title": report.get("title"),
+        "summary": report.get("summary"),
+        "riskLevel": report.get("riskLevel"),
+        "sections": sections,
+    }
+
+
 def render_markdown(report: dict[str, Any]) -> str:
     """Render the report payload as Markdown."""
     lines: list[str] = []

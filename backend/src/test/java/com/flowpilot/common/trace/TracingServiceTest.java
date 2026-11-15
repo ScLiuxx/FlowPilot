@@ -141,4 +141,26 @@ class TracingServiceTest {
         // would carry a trace id that belongs to another task.
         assertThat(TraceContext.currentTraceIdOrNull()).isEqualTo(before);
     }
+
+    @Test
+    @DisplayName("a thread outside a span has no span id at all")
+    void aThreadOutsideASpanHasNoSpanId() {
+        // The protocol accepts a missing span id but not an empty one. A message
+        // that is published outside a span used to carry an empty span id, which
+        // the agent service rejected, so the message was dropped and the node
+        // waited for ever.
+        assertThat(TraceContext.currentSpanId()).isNull();
+    }
+
+    @Test
+    @DisplayName("the span id of the thread is restored when the span ends")
+    void theSpanIdOfTheThreadIsRestored() {
+        TracingService tracing = service();
+
+        TracingService.TracedSpan span = tracing.start("node.test", TRACE_ID, "", 1L, 2L, Map.of());
+        assertThat(TraceContext.currentSpanId()).matches("^[0-9a-f]{16}$");
+        span.close();
+
+        assertThat(TraceContext.currentSpanId()).isNull();
+    }
 }

@@ -118,6 +118,22 @@ public class NodeResultService {
     public void fail(Long nodeExecutionId, Integer attemptNo, Long leaseToken,
                      String errorCode, String errorMessage, String errorCategory,
                      boolean retryable, RetryPolicyDefinition retryPolicyDefinition) {
+        fail(nodeExecutionId, attemptNo, leaseToken, errorCode, errorMessage, errorCategory,
+                retryable, retryPolicyDefinition, null);
+    }
+
+    /**
+     * Records a failed attempt and decides whether the node is retried.
+     *
+     * <p>The suggested delay is the wait an upstream asked for, e.g. the moment its rate limit
+     * resets. It is a lower bound: the retry never happens before the upstream is ready again,
+     * and the backoff of the policy still applies when it is longer.
+     */
+    @Transactional
+    public void fail(Long nodeExecutionId, Integer attemptNo, Long leaseToken,
+                     String errorCode, String errorMessage, String errorCategory,
+                     boolean retryable, RetryPolicyDefinition retryPolicyDefinition,
+                     Duration suggestedDelay) {
         NodeExecution node = nodeExecutionMapper.selectById(nodeExecutionId);
         if (node == null) {
             return;
@@ -129,6 +145,9 @@ public class NodeResultService {
         boolean canRetry = retryable && attemptNo < maxAttempts;
         if (canRetry) {
             Duration delay = retryPolicy.delayFor(attemptNo);
+            if (suggestedDelay != null && suggestedDelay.compareTo(delay) > 0) {
+                delay = suggestedDelay;
+            }
             // The moment the retry is due is persisted, so the node is only released when the
             // delay of the policy really elapsed.
             LocalDateTime nextRetryAt = LocalDateTime.now().plus(delay);

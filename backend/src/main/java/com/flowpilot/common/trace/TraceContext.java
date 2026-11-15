@@ -66,17 +66,13 @@ public final class TraceContext {
     }
 
     /**
-     * The span id of the current step, empty when the thread does not run inside a span.
+     * The span id of the current step, or {@code null} when the thread does not run inside a span.
+     *
+     * <p>The id is missing rather than empty: the protocol accepts a missing span id but not an
+     * empty one. A message that is published outside a span therefore carries no span id at all,
+     * and the peer accepts it.
      */
     public static String currentSpanId() {
-        String spanId = SPAN_ID.get();
-        return spanId == null ? "" : spanId;
-    }
-
-    /**
-     * The span id of the thread, or {@code null} when the thread does not run inside a span.
-     */
-    public static String currentSpanIdOrNull() {
         return SPAN_ID.get();
     }
 

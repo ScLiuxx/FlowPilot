@@ -150,7 +150,7 @@ public class NodeWorker {
             if (nodeType == NodeType.HUMAN) {
                 // A human node pauses the workflow. The approval service creates the request and
                 // the workflow continues once the decision arrives.
-                pauseForApproval(refreshed, definition, result);
+                pauseForApproval(refreshed, definition, result, context.getUpstreamOutputs());
                 return;
             }
 
@@ -264,7 +264,7 @@ public class NodeWorker {
      * decides, and the workflow stays in {@code WAITING_HUMAN} as well.
      */
     private void pauseForApproval(NodeExecution node, WorkflowNodeDefinition definition,
-                                   NodeResult result) {
+                                   NodeResult result, Map<String, Object> upstreamOutputs) {
         Map<String, Object> config = definition == null ? Map.of() : definition.config();
         Map<String, Object> output = result == null ? Map.of() : result.getOutput();
 
@@ -277,19 +277,33 @@ public class NodeWorker {
 
         // The approval request also moves the workflow into the waiting state, because a workflow
         // that waits for a reviewer is not a failure.
+        Map<String, Object> requestData = new LinkedHashMap<>(output);
+        // The reviewer has to see what they approve, so the report of the upstream agent travels
+        // with the request.
+        Map<String, Object> report = findReport(upstreamOutputs);
+        if (!report.isEmpty()) {
+            requestData.put("report", report);
+        }
         approvalService.request(node.getWorkflowExecutionId(), node.getId(),
                 String.valueOf(config.getOrDefault("approvalType", "GENERIC")),
                 String.valueOf(output.getOrDefault("title",
                         config.getOrDefault("title", "请确认执行结果"))),
                 String.valueOf(output.getOrDefault("description",
                         config.getOrDefault("description", ""))),
-                output);
+                requestData);
 
         log.info("the human node {} waits for a decision", node.getNodeKey());
     }
 
-    private NodeContext buildContext(NodeExecution node, WorkflowNodeDefinition definition,
-                                     int attemptNo, Long leaseToken) {
+    /**
+     * Collects the outputs of the predecessors of a node.
+     *
+     * <p>The outputs of the direct predecessors are read from the database. The result of the
+     * agent is the report the reviewer has to read, so it has to travel with the approval
+     * request.
+     */
+    private Map<String, Object> collectUpstreamOutputs(NodeExecution node,
+                                                       WorkflowNodeDefinition definition) {
         Map<String, Object> upstreamOutputs = new LinkedHashMap<>();
         if (definition != null) {
             for (String dependency : definition.dependencies()) {
@@ -300,6 +314,33 @@ public class NodeWorker {
                 }
             }
         }
+        return upstreamOutputs;
+    }
+
+    /**
+     * The report an upstream node produced.
+     *
+     * <p>The agent stores its report under the key {@code report}. A reviewer who only sees the
+     * title of the decision cannot approve it, so the report travels with the request.
+     */
+    private Map<String, Object> findReport(Map<String, Object> upstreamOutputs) {
+        for (Object upstream : upstreamOutputs.values()) {
+            if (!(upstream instanceof Map<?, ?> values)) {
+                continue;
+            }
+            Object report = values.get("report");
+            if (report instanceof Map<?, ?> reportMap && !reportMap.isEmpty()) {
+                @SuppressWarnings("unchecked")
+                Map<String, Object> typed = (Map<String, Object>) reportMap;
+                return typed;
+            }
+        }
+        return Map.of();
+    }
+
+    private NodeContext buildContext(NodeExecution node, WorkflowNodeDefinition definition,
+                                     int attemptNo, Long leaseToken) {
+        Map<String, Object> upstreamOutputs = collectUpstreamOutputs(node, definition);
         Map<String, Object> input = JsonUtils.toMap(node.getInputJson());
         return NodeContext.from(node, definition, input, upstreamOutputs).toBuilder()
                 .attemptNo(attemptNo)

@@ -5,7 +5,6 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
 
 import java.util.LinkedHashMap;
-import java.util.List;
 import java.util.Map;
 
 /**
@@ -17,20 +16,6 @@ import java.util.Map;
 @Slf4j
 @Component
 public class HumanNodeExecutor implements NodeExecutor {
-
-    /**
-     * The fields of an upstream result a reviewer needs in order to decide.
-     *
-     * <p>The approval request is what the reviewer sees. Without the content of the decision the
-     * approval asks for a yes or a no without showing what is being approved.
-     */
-    private static final List<String> REVIEW_FIELDS = List.of(
-            "riskLevel",
-            "architectureAnalysis",
-            "maintenanceAnalysis",
-            "riskAnalysis",
-            "recommendation",
-            "conclusion");
 
     @Override
     public NodeType supportType() {
@@ -45,12 +30,6 @@ public class HumanNodeExecutor implements NodeExecutor {
         output.put("title", String.valueOf(config.getOrDefault("title", "请确认执行结果")));
         output.put("description", String.valueOf(config.getOrDefault("description", "")));
         output.put("awaitingDecision", true);
-        // The content of the decision travels with the request, so the reviewer can read what
-        // they are asked to approve.
-        Map<String, Object> review = reviewContent(context.getUpstreamOutputs());
-        if (!review.isEmpty()) {
-            output.put("analysis", review);
-        }
         // The deadline of the approval travels with the request, so the approval service can
         // close the approval when nobody answers it.
         Object timeoutMinutes = config.get("timeoutMinutes");
@@ -62,30 +41,5 @@ public class HumanNodeExecutor implements NodeExecutor {
             output.put("timeoutAction", timeoutAction);
         }
         return NodeResult.success(output);
-    }
-
-    /**
-     * The analysis of the predecessors the reviewer is asked about.
-     *
-     * <p>The fields are taken from every predecessor that carries them, so the approval shows
-     * the analysis of the node that ran before it.
-     */
-    private Map<String, Object> reviewContent(Map<String, Object> upstreamOutputs) {
-        Map<String, Object> review = new LinkedHashMap<>();
-        if (upstreamOutputs == null) {
-            return review;
-        }
-        for (Object upstream : upstreamOutputs.values()) {
-            if (!(upstream instanceof Map<?, ?> values)) {
-                continue;
-            }
-            for (String field : REVIEW_FIELDS) {
-                Object value = values.get(field);
-                if (value != null && !String.valueOf(value).isBlank()) {
-                    review.putIfAbsent(field, value);
-                }
-            }
-        }
-        return review;
     }
 }
