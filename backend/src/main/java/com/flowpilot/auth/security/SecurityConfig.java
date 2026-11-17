@@ -3,6 +3,7 @@ package com.flowpilot.auth.security;
 import com.flowpilot.common.result.ErrorCode;
 import com.flowpilot.common.result.Result;
 import com.flowpilot.common.util.JsonUtils;
+import jakarta.servlet.DispatcherType;
 import lombok.RequiredArgsConstructor;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -44,6 +45,12 @@ public class SecurityConfig {
                 .cors(cors -> cors.configurationSource(corsConfigurationSource()))
                 .sessionManagement(session -> session.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
                 .authorizeHttpRequests(auth -> auth
+                        // An asynchronous request (the event stream) is dispatched again when it
+                        // completes. The JWT filter is a OncePerRequestFilter and does not run on
+                        // that second dispatch, so the request would be denied after its response
+                        // was already committed and the log would fill with stack traces. The
+                        // dispatch only continues a request that was authorized when it started.
+                        .dispatcherTypeMatchers(DispatcherType.ASYNC, DispatcherType.ERROR).permitAll()
                         .requestMatchers(
                                 "/api/v1/auth/register",
                                 "/api/v1/auth/login",

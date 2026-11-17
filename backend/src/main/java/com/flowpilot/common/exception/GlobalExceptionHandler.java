@@ -15,8 +15,10 @@ import org.springframework.web.bind.annotation.RestControllerAdvice;
 import org.springframework.web.method.annotation.MethodArgumentTypeMismatchException;
 import org.springframework.web.servlet.NoHandlerFoundException;
 
+import jakarta.servlet.http.HttpServletResponse;
 import jakarta.validation.ConstraintViolation;
 import jakarta.validation.ConstraintViolationException;
+import java.io.IOException;
 import java.util.stream.Collectors;
 
 /**
@@ -83,10 +85,36 @@ public class GlobalExceptionHandler {
     }
 
     @ExceptionHandler(Exception.class)
-    public ResponseEntity<Result<Void>> handleUnexpected(Exception ex) {
+    public ResponseEntity<Result<Void>> handleUnexpected(Exception ex, HttpServletResponse response) {
+        if (isClientDisconnect(ex)) {
+            // A closed tab or a stream whose client went away is not a server failure:
+            // there is nobody left to answer, and the stack trace is only noise.
+            log.debug("the client disconnected before the response was complete: {}", ex.getMessage());
+            return null;
+        }
+        if (response.isCommitted()) {
+            // The response is already on the wire, as happens for an event stream. Writing
+            // the envelope would fail and bury the original error under a second one.
+            log.warn("the response was already committed: {}", ex.getMessage());
+            return null;
+        }
         log.error("unhandled exception", ex);
         return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
                 .body(Result.failure(ErrorCode.COMMON_INTERNAL_ERROR, "Internal server error"));
+    }
+
+    /**
+     * Whether the failure only says that the client is gone.
+     */
+    private boolean isClientDisconnect(Exception ex) {
+        if (ex instanceof IOException) {
+            String message = ex.getMessage();
+            return message != null
+                    && (message.contains("Broken pipe") || message.contains("Connection reset"));
+        }
+        String type = ex.getClass().getName();
+        return type.endsWith("ClientAbortException")
+                || type.endsWith("AsyncRequestNotUsableException");
     }
 
     private String describe(FieldError error) {

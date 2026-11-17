@@ -1,10 +1,14 @@
 package com.flowpilot.common.exception;
 
 import com.flowpilot.common.result.ErrorCode;
+import com.flowpilot.common.result.Result;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.http.HttpStatus;
+import org.springframework.http.ResponseEntity;
+import org.springframework.mock.web.MockHttpServletResponse;
 
+import java.io.IOException;
 import java.lang.reflect.Method;
 import java.util.LinkedHashMap;
 import java.util.Map;
@@ -66,6 +70,37 @@ class ErrorCodeHttpMappingTest {
                     .as("the code %d is used by %s and %s", code.getCode(), previous, code)
                     .isNull();
         }
+    }
+
+    @Test
+    @DisplayName("a disconnected client is not reported as an internal error")
+    void aDisconnectedClientIsNotAnInternalError() {
+        assertThat(handler.handleUnexpected(new IOException("Broken pipe"),
+                new MockHttpServletResponse()))
+                .as("a client that went away leaves nobody to answer")
+                .isNull();
+    }
+
+    @Test
+    @DisplayName("a committed response is not answered a second time")
+    void aCommittedResponseIsNotAnsweredAgain() {
+        MockHttpServletResponse response = new MockHttpServletResponse();
+        response.setCommitted(true);
+
+        assertThat(handler.handleUnexpected(new IllegalStateException("the stream failed"), response))
+                .as("the response is already on the wire, writing the envelope would fail")
+                .isNull();
+    }
+
+    @Test
+    @DisplayName("an unexpected error before anything is written is a 500")
+    void anUnexpectedErrorIsA500() {
+        ResponseEntity<Result<Void>> response = handler.handleUnexpected(
+                new IllegalStateException("boom"), new MockHttpServletResponse());
+
+        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.INTERNAL_SERVER_ERROR);
+        assertThat(response.getBody()).isNotNull();
+        assertThat(response.getBody().getCode()).isEqualTo(ErrorCode.COMMON_INTERNAL_ERROR.getCode());
     }
 
     private HttpStatus statusOf(ErrorCode code) {

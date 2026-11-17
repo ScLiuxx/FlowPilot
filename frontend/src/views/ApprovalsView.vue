@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted, reactive, ref, watch } from 'vue'
+import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Refresh } from '@element-plus/icons-vue'
@@ -9,7 +9,9 @@ import PageHeader from '@/components/PageHeader.vue'
 import EmptyState from '@/components/EmptyState.vue'
 import ErrorState from '@/components/ErrorState.vue'
 import StatusTag from '@/components/StatusTag.vue'
+import ApprovalReportCard from '@/components/ApprovalReportCard.vue'
 import { approvalStatusMeta, APPROVAL_STATUS_OPTIONS } from '@/utils/constants'
+import { parseApprovalReport } from '@/utils/approval'
 import { formatDateTime } from '@/utils/format'
 
 const router = useRouter()
@@ -19,6 +21,16 @@ const total = ref(0)
 const loading = ref(false)
 const error = ref('')
 const decidingId = ref<Id | null>(null)
+
+/** 正在查看审批内容的审批；null 表示弹窗关闭 */
+const selected = ref<Approval | null>(null)
+const selectedReport = computed(() => parseApprovalReport(selected.value?.requestData))
+const detailVisible = computed({
+  get: () => selected.value !== null,
+  set: (visible: boolean) => {
+    if (!visible) selected.value = null
+  }
+})
 
 const query = reactive({
   page: 1,
@@ -117,6 +129,16 @@ onMounted(load)
               <div v-if="row.description" class="fp-appr__desc fp-truncate">
                 {{ row.description }}
               </div>
+              <el-button
+                v-if="parseApprovalReport(row.requestData)"
+                size="small"
+                text
+                type="primary"
+                class="fp-appr__detail"
+                @click="selected = row"
+              >
+                查看审批内容
+              </el-button>
             </template>
           </el-table-column>
           <el-table-column label="类型" width="170">
@@ -195,6 +217,20 @@ onMounted(load)
         />
       </div>
     </div>
+
+    <el-dialog v-model="detailVisible" title="审批内容" width="680px" append-to-body>
+      <template v-if="selected">
+        <div class="fp-appr__dialog-head">
+          <div class="fp-appr__title">{{ selected.title }}</div>
+          <div v-if="selected.description" class="fp-appr__desc">{{ selected.description }}</div>
+        </div>
+        <ApprovalReportCard v-if="selectedReport" :request-data="selected.requestData" />
+        <p v-else class="fp-subtle">该审批没有附带报告内容。</p>
+      </template>
+      <template #footer>
+        <el-button @click="detailVisible = false">关闭</el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
@@ -222,6 +258,20 @@ onMounted(load)
   max-width: 460px;
   font-size: 12px;
   color: var(--fp-text-subtle);
+}
+
+.fp-appr__detail {
+  margin-top: 2px;
+  padding-left: 0;
+}
+
+.fp-appr__dialog-head {
+  margin-bottom: var(--sp-2);
+}
+
+.fp-appr__dialog-head .fp-appr__desc {
+  max-width: none;
+  font-size: 13px;
 }
 
 .fp-appr__pager {

@@ -482,6 +482,9 @@ public class WorkflowScheduler {
         boolean anyFailed = false;
         boolean anyWaitingHuman = false;
         int completed = 0;
+        // What the console shows as completed; a cancelled node was stopped on purpose and is
+        // therefore not counted as progress.
+        int reportedCompleted = 0;
         int failed = 0;
 
         for (NodeExecution node : nodes) {
@@ -496,15 +499,18 @@ public class WorkflowScheduler {
                     anyFailed = true;
                 }
                 case CANCELED -> completed++;
-                case SUCCEEDED, SKIPPED -> completed++;
+                case SUCCEEDED, SKIPPED -> {
+                    completed++;
+                    reportedCompleted++;
+                }
                 default -> anyInFlight = true;
             }
         }
 
-        // The counters are shown in the console while the workflow runs. They are refreshed
-        // here, because the execution row is already locked: the node rows are locked by the
-        // scheduler, and the other order would let two transactions wait for each other.
-        executionMapper.refreshNodeCounts(executionId);
+        // The counters are computed from the nodes above, not with a subquery: a subquery
+        // locks the node rows of the completions that are still open, and two completions
+        // would then wait for each other's execution lock.
+        executionMapper.updateNodeCounts(executionId, reportedCompleted, failed);
 
         // A cancelled execution ends as cancelled, never as failed. The nodes that were still
         // running finish their current attempt first, so the cancellation is cooperative.
